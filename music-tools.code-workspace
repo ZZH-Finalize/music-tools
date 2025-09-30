@@ -6,5 +6,6 @@
     ],
     "settings": {
         "python.languageServer": "Default",
+        "files.trimTrailingWhitespace": true
     }
 }

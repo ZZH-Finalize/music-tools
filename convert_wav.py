@@ -19,7 +19,7 @@ def do_convert(output: str, input: str, *args: str, bitrate: str = '320k', encod
 def main() -> None:
     if False == os.path.exists(cwd):
         raise RuntimeError('path: {} does not exists!'.format(cwd))
-    
+
     for file in pathop.dump_dir(cwd, '.wav'):
         output_name = file.removesuffix('wav') + 'mp3'
         do_convert(output_name, file)

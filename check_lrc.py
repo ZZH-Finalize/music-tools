@@ -18,7 +18,7 @@ class FileMarker:
             return
 
         file_name, file_ext = fn_part
-        
+
         if file_ext in self.MUSIC_EXT:
             self.music_files.add(file_name)
         elif file_ext == self.LYRIC_EXT:
@@ -28,13 +28,13 @@ class FileMarker:
 
     def get_res(self):
         return self.music_files - self.lyric_files, self.lyric_files - self.music_files
-    
+
     def get_music(self):
         return self.music_files
-    
+
     def get_lyric(self):
         return self.lyric_files
-    
+
 def name_hd(name: str):
     name = name.replace('-', ' ')
     return name + '\n'
@@ -63,7 +63,7 @@ def main():
     # print('music_no_lrc:', music_no_lrc)
     # print('lrc_no_music:', lrc_no_music)
     # print('music_has_lrc:', music_has_lrc)
-        
+
 
 
 if __name__ == '__main__':
