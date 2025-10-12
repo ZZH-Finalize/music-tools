@@ -3,6 +3,9 @@
 """
 from gd_api import GDAPIClient
 
+def test():
+    client = GDAPIClient()
+
 
 def test_download_features():
     client = GDAPIClient()
