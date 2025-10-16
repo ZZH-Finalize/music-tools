@@ -353,7 +353,10 @@ class MusicUpgradeGUI:
         select_btn.pack(side='right')
 
         # 自动搜索原始文件名
-        search_var.set(clean_filename(original_filename))
+        search_keyword = clean_filename(original_filename)
+        # 将&替换为英文逗号
+        search_keyword = search_keyword.replace('&', ',')
+        search_var.set(search_keyword)
         self.perform_search_async(index, search_var.get(), result_tree)
 
     def perform_search_async(self, index, keyword, result_tree):
@@ -372,6 +375,8 @@ class MusicUpgradeGUI:
             if not keyword:
                 return
 
+            # 将&替换为英文逗号
+            keyword = keyword.replace('&', ',')
             # 执行搜索
             search_results = self.client.search(keyword, source="netease", count=20)
 
@@ -420,6 +425,8 @@ class MusicUpgradeGUI:
             if not keyword:
                 return
 
+            # 将&替换为英文逗号
+            keyword = keyword.replace('&', ',')
             # 执行搜索
             search_results = self.client.search(keyword, source="netease", count=20)
 
