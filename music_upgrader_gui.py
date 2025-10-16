@@ -124,6 +124,7 @@ class MusicUpgradeGUI:
 
     def scan_files(self):
         if not self.directory:
+            logger.warning("请先选择音乐目录")
             messagebox.showwarning("警告", "请先选择音乐目录")
             return
 
@@ -453,6 +454,7 @@ class MusicUpgradeGUI:
         # 获取选中的项
         selection = result_tree.selection()
         if not selection:
+            logger.warning("请先选择一个匹配项")
             messagebox.showwarning("警告", "请先选择一个匹配项")
             return
 
@@ -463,6 +465,7 @@ class MusicUpgradeGUI:
         # 获取关联的结果对象索引
         tags = item['tags']
         if not tags:
+            logger.error("无法获取匹配结果数据")
             messagebox.showerror("错误", "无法获取匹配结果数据")
             return
 
@@ -471,6 +474,7 @@ class MusicUpgradeGUI:
         # 从缓存中获取对应的结果对象
         tree_id = str(result_tree)
         if not hasattr(self, '_search_results_cache') or tree_id not in self._search_results_cache:
+            logger.error("搜索结果缓存不存在")
             messagebox.showerror("错误", "搜索结果缓存不存在")
             return
 
@@ -483,17 +487,21 @@ class MusicUpgradeGUI:
                 if 0 <= result_index < len(search_results):
                     result = search_results[result_index]
                 else:
+                    logger.error("匹配结果索引超出范围")
                     messagebox.showerror("错误", "匹配结果索引超出范围")
                     return
             except ValueError:
+                logger.error("匹配结果格式错误")
                 messagebox.showerror("错误", "匹配结果格式错误")
                 return
         else:
+            logger.error("匹配结果格式错误")
             messagebox.showerror("错误", "匹配结果格式错误")
             return
 
         # 确保结果是一个字典对象
         if not isinstance(result, dict):
+            logger.error("匹配结果格式错误")
             messagebox.showerror("错误", "匹配结果格式错误")
             return
 
@@ -527,6 +535,7 @@ class MusicUpgradeGUI:
         matched_song = self.matched_songs[index]
         # 检查matched_song是否为字典且有id字段
         if not matched_song or not isinstance(matched_song, dict) or not matched_song.get('id'):
+            logger.warning(f"文件 {self.music_files[index].name} 没有匹配结果，无法下载")
             messagebox.showwarning("警告", "该项目没有匹配结果，无法下载")
             return
 
@@ -567,6 +576,7 @@ class MusicUpgradeGUI:
                         logger.info(f"成功下载: {music_file.name}")
                         # 更新表格显示为已下载
                         self.root.after(0, lambda idx=index: self.update_table_item(idx, "已下载"))
+                        logger.info(f"成功下载: {music_file.name}")
                         messagebox.showinfo("成功", f"成功下载: {music_file.name}")
                     else:
                         logger.warning(f"下载失败: {music_file.name}")
@@ -587,10 +597,12 @@ class MusicUpgradeGUI:
     def start_upgrade(self):
         """开始升级音乐文件"""
         if not self.directory or not self.music_files:
+            logger.warning("请先扫描音乐文件")
             messagebox.showwarning("警告", "请先扫描音乐文件")
             return
 
         if not any(song and isinstance(song, dict) and song.get('id') for song in self.matched_songs if song):
+            logger.warning("没有可升级的匹配文件")
             messagebox.showwarning("警告", "没有可升级的匹配文件")
             return
 
@@ -674,6 +686,7 @@ class MusicUpgradeGUI:
             self.root.after(0, lambda: self.upgrade_complete(success_count, fail_count))
 
         except Exception as e:
+            logger.error(f"升级过程中出错: {str(e)}")
             self.root.after(0, lambda e=e: messagebox.showerror("错误", f"升级过程中出错: {str(e)}"))
             self.root.after(0, lambda: self.enable_controls_after_download())
 
@@ -682,6 +695,7 @@ class MusicUpgradeGUI:
         self.progress_var.set(100)
         self.enable_controls_after_download()
         self.root.title("音乐品质升级工具")
+        logger.info(f"升级完成！成功: {success_count}, 失败: {fail_count}, 总计: {len(self.music_files)}")
         messagebox.showinfo("完成", f"升级完成！成功: {success_count}, 失败: {fail_count}, 总计: {len(self.music_files)}")
 
 
