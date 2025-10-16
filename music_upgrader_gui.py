@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-GUI音乐升级工具
+GUI音乐升级工具 (asyncio版)
 功能：读取指定目录下的音乐文件（跳过flac无损格式），使用文件名调用GD API搜索同歌曲，并显示匹配结果，
 用户确认后下载无损格式到本地
 """
@@ -9,10 +9,12 @@ GUI音乐升级工具
 import os
 import sys
 import threading
+import asyncio
 from typing import List, Optional, Dict, Any
 from tkinter import ttk
 import tkinter as tk
 from tkinter import filedialog, messagebox
+import concurrent.futures
 
 # 导入异步核心模块（包含所有功能）
 from music_upgrader_core_async import (
@@ -30,6 +32,7 @@ from music_upgrader_core_async import (
 
 from typing import Dict, Any
 
+
 class MusicUpgradeGUI:
     def __init__(self, root):
         self.root = root
@@ -41,6 +44,10 @@ class MusicUpgradeGUI:
         self.music_files = []
         self.matched_songs: List[Optional[Dict[str, Any]]] = []
         self.client = AsyncRateLimitedGDAPIClient()
+
+        # 用于控制异步任务的事件循环
+        self.loop = None
+        self.loop_thread = None
 
         # 创建界面
         self.create_widgets()
@@ -159,7 +166,7 @@ class MusicUpgradeGUI:
         self.disable_table_during_matching()
 
         # 在新线程中运行匹配过程
-        matching_thread = threading.Thread(target=self.match_files_threaded)
+        matching_thread = threading.Thread(target=self.match_files_async_threaded)
         matching_thread.daemon = True
         matching_thread.start()
 
@@ -173,18 +180,22 @@ class MusicUpgradeGUI:
         # 绑定右键菜单事件
         self.tree.bind("<Button-3>", self.show_context_menu)  # 右键点击
 
-    def match_files_threaded(self):
-        """匹配文件的线程函数"""
-        def process_next_file(index=0):
-            if index >= len(self.music_files):
-                # 所有文件处理完成
-                self.root.after(0, self.matching_complete)
-                return
+    def match_files_async_threaded(self):
+        """在独立线程中运行异步匹配过程"""
+        # 创建新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
-            music_file = self.music_files[index]
+        try:
+            loop.run_until_complete(self.match_files_async())
+        finally:
+            loop.close()
 
+    async def match_files_async(self):
+        """异步匹配文件"""
+        for index, music_file in enumerate(self.music_files):
             # 更新进度
-            progress = (index / len(self.music_files)) * 100
+            progress = (index / len(self.music_files)) * 10
             self.root.after(0, lambda p=progress: self.progress_var.set(p))
 
             # 显示当前处理的文件
@@ -198,53 +209,35 @@ class MusicUpgradeGUI:
                 logger.debug(f"搜索关键词: {search_keyword}")
 
                 # 异步搜索音乐
-                def search_callback(search_results, search_error):
-                    try:
-                        if search_error:
-                            raise search_error
+                async with AsyncRateLimitedGDAPIClient() as client:
+                    search_results = await client.search(search_keyword, source="netease", count=5)
 
-                        if not search_results:
-                            matched_song = {"name": "未找到匹配", "artist": "", "id": None}
-                        else:
-                            # 找到最佳匹配
-                            best_match = find_best_match(search_results, music_file.name, False)
-                            if not best_match:
-                                matched_song = {"name": "未找到匹配", "artist": "", "id": None}
-                            else:
-                                matched_song = best_match
+                if not search_results:
+                    matched_song = {"name": "未找到匹配", "artist": "", "id": None}
+                else:
+                    # 找到最佳匹配
+                    best_match = find_best_match(search_results, music_file.name, False)
+                    if not best_match:
+                        matched_song = {"name": "未找到匹配", "artist": "", "id": None}
+                    else:
+                        matched_song = best_match
 
-                        # 更新匹配结果
-                        self.matched_songs[index] = matched_song
+                # 更新匹配结果
+                self.matched_songs[index] = matched_song
 
-                        # 更新表格显示
-                        display_text = f"{matched_song.get('name', '未知')} - {matched_song.get('artist', ['未知'])[0] if isinstance(matched_song.get('artist'), list) else matched_song.get('artist', '未知')}"
-                        self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text))
-
-                    except Exception as e:
-                        logger.error(f"匹配文件时出错 {music_file.name}: {str(e)}")
-                        matched_song = {"name": "匹配失败", "artist": "", "id": None}
-                        self.matched_songs[index] = matched_song
-                        display_text = "匹配失败"
-                        self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text))
-
-                    # 处理下一个文件
-                    self.root.after(0, lambda: process_next_file(index + 1))
-
-                # 启动异步搜索
-                self.client.search_async(search_keyword, source="netease", count=5, callback=search_callback)
+                # 更新表格显示
+                display_text = f"{matched_song.get('name', '未知')} - {matched_song.get('artist', ['未知'])[0] if isinstance(matched_song.get('artist'), list) else matched_song.get('artist', '未知')}"
+                self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text))
 
             except Exception as e:
-                logger.error(f"处理文件时出错 {music_file.name}: {str(e)}")
+                logger.error(f"匹配文件时出错 {music_file.name}: {str(e)}")
                 matched_song = {"name": "匹配失败", "artist": "", "id": None}
                 self.matched_songs[index] = matched_song
                 display_text = "匹配失败"
                 self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text))
 
-                # 处理下一个文件
-                self.root.after(0, lambda: process_next_file(index + 1))
-
-        # 开始处理第一个文件
-        process_next_file(0)
+        # 所有文件处理完成
+        self.root.after(0, self.matching_complete)
 
     def update_table_item(self, index, text):
         """更新表格的指定项"""
@@ -262,7 +255,7 @@ class MusicUpgradeGUI:
         """匹配完成后的处理"""
         self.progress_var.set(100)
         self.upgrade_btn.config(state='normal')
-        self.enable_table_after_matching()  # 启用表格控件
+        self.enable_table_after_matching() # 启用表格控件
         self.root.title("音乐品质升级工具")
         messagebox.showinfo("完成", f"匹配完成！找到 {len(self.music_files)} 个音乐文件，其中 {sum(1 for s in self.matched_songs if s and isinstance(s, dict) and s.get('id'))} 个成功匹配。")
 
@@ -379,113 +372,6 @@ class MusicUpgradeGUI:
         search_var.set(search_keyword)
         self.perform_search_async(index, search_var.get(), result_tree)
 
-    def perform_search_async(self, index, keyword, result_tree):
-        """异步执行搜索"""
-        # 使用异步API客户端进行搜索
-        def search_callback(result, error):
-            # 在主线程中更新UI
-            if error:
-                logger.error(f"搜索失败: {str(error)}")
-                self.root.after(0, lambda: messagebox.showerror("错误", f"搜索失败: {str(error)}"))
-            else:
-                # 在主线程中清空现有结果
-                self.root.after(0, lambda: self._clear_search_results(result_tree))
-                # 在主线程中填充结果到表格
-                self.root.after(0, lambda: self._populate_search_results(result, result_tree))
-
-        self.client.search_async(keyword, source="netease", count=20, callback=search_callback)
-
-    # 删除这个方法，因为我们不再需要它
-    # def _perform_search_threaded(self, keyword, result_tree):
-    #     """在后台线程中执行搜索"""
-    #     try:
-    #         # 在主线程中清空现有结果
-    #         self.root.after(0, lambda: self._clear_search_results(result_tree))
-
-    #         if not keyword:
-    #             return
-
-    #         # 将&替换为英文逗号
-    #         keyword = keyword.replace('&', ',')
-    #         # 执行搜索
-    #         search_results = self.client.search(keyword, source="netease", count=20)
-
-    #         # 在主线程中填充结果到表格
-    #         self.root.after(0, lambda: self._populate_search_results(search_results, result_tree))
-
-    #     except Exception as e:
-    #         logger.error(f"搜索失败: {str(e)}")
-    #         self.root.after(0, lambda: messagebox.showerror("错误", f"搜索失败: {str(e)}"))
-
-    def _clear_search_results(self, result_tree):
-        """清空搜索结果"""
-        for item in result_tree.get_children():
-            result_tree.delete(item)
-
-    def _populate_search_results(self, search_results, result_tree):
-        """填充搜索结果到表格"""
-        # 为每个结果树存储搜索结果
-        if not hasattr(self, '_search_results_cache'):
-            self._search_results_cache = {}
-        # 使用result_tree的id作为键来存储结果
-        tree_id = str(result_tree)  # 使用树的字符串表示作为键
-        self._search_results_cache[tree_id] = search_results
-
-        for i, result in enumerate(search_results):
-            name = result.get('name', '未知')
-            # 处理艺术家信息，将&替换为逗号
-            artist_data = result.get('artist', [])
-            if isinstance(artist_data, list):
-                # 将列表中的&替换为逗号
-                artist_list = [artist.replace('&', ',') for artist in artist_data]
-                artist = ', '.join(artist_list)
-            else:
-                artist = str(artist_data).replace('&', ',')
-            album = result.get('album', '未知')
-
-            result_tree.insert('', 'end', values=(name, artist, album), tags=(f"search_result_{i}",))
-
-    def perform_search(self, index, keyword, result_tree):
-        """执行搜索（保持向后兼容）"""
-        try:
-            # 清空现有结果
-            for item in result_tree.get_children():
-                result_tree.delete(item)
-
-            if not keyword:
-                return
-
-            # 将&替换为英文逗号
-            keyword = keyword.replace('&', ',')
-            # 执行搜索
-            search_results = self.client.search(keyword, source="netease", count=20)
-
-            # 为每个结果树存储搜索结果
-            if not hasattr(self, '_search_results_cache'):
-                self._search_results_cache = {}
-            # 使用result_tree的id作为键来存储结果
-            tree_id = str(result_tree)  # 使用树的字符串表示作为键
-            self._search_results_cache[tree_id] = search_results
-
-            # 填充结果到表格
-            for i, result in enumerate(search_results):
-                name = result.get('name', '未知')
-                # 处理艺术家信息，将&替换为逗号
-                artist_data = result.get('artist', [])
-                if isinstance(artist_data, list):
-                    # 将列表中的&替换为逗号
-                    artist_list = [artist.replace('&', ',') for artist in artist_data]
-                    artist = ', '.join(artist_list)
-                else:
-                    artist = str(artist_data).replace('&', ',')
-                album = result.get('album', '未知')
-
-                result_tree.insert('', 'end', values=(name, artist, album), tags=(f"search_result_{i}",))
-
-        except Exception as e:
-            logger.error(f"搜索失败: {str(e)}")
-            messagebox.showerror("错误", f"搜索失败: {str(e)}")
-
     def select_match(self, event, index, result_tree, window):
         """选择匹配项"""
         # 获取选中的项
@@ -562,6 +448,74 @@ class MusicUpgradeGUI:
 
         logger.info(f"已选择匹配项: {values[0]}")
 
+    def perform_search_async(self, index, keyword, result_tree):
+        """异步执行搜索"""
+        # 在后台线程中运行异步搜索
+        search_thread = threading.Thread(target=self._perform_search_async_threaded, args=(index, keyword, result_tree))
+        search_thread.daemon = True
+        search_thread.start()
+
+    def _perform_search_async_threaded(self, index, keyword, result_tree):
+        """在独立线程中运行异步搜索"""
+        # 创建新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            loop.run_until_complete(self._perform_search_async(index, keyword, result_tree))
+        finally:
+            loop.close()
+
+    async def _perform_search_async(self, index, keyword, result_tree):
+        """执行异步搜索"""
+        try:
+            # 清空现有结果
+            self.root.after(0, lambda: self._clear_search_results(result_tree))
+
+            if not keyword:
+                return
+
+            # 将&替换为英文逗号
+            keyword = keyword.replace('&', ',')
+            # 异步执行搜索
+            async with AsyncRateLimitedGDAPIClient() as client:
+                search_results = await client.search(keyword, source="netease", count=20)
+
+            # 在主线程中填充结果到表格
+            self.root.after(0, lambda: self._populate_search_results(search_results, result_tree))
+
+        except Exception as e:
+            logger.error(f"搜索失败: {str(e)}")
+            self.root.after(0, lambda: messagebox.showerror("错误", f"搜索失败: {str(e)}"))
+
+    def _clear_search_results(self, result_tree):
+        """清空搜索结果"""
+        for item in result_tree.get_children():
+            result_tree.delete(item)
+
+    def _populate_search_results(self, search_results, result_tree):
+        """填充搜索结果到表格"""
+        # 为每个结果树存储搜索结果
+        if not hasattr(self, '_search_results_cache'):
+            self._search_results_cache = {}
+        # 使用result_tree的id作为键来存储结果
+        tree_id = str(result_tree)  # 使用树的字符串表示作为键
+        self._search_results_cache[tree_id] = search_results
+
+        for i, result in enumerate(search_results):
+            name = result.get('name', '未知')
+            # 处理艺术家信息，将&替换为逗号
+            artist_data = result.get('artist', [])
+            if isinstance(artist_data, list):
+                # 将列表中的&替换为逗号
+                artist_list = [artist.replace('&', ',') for artist in artist_data]
+                artist = ', '.join(artist_list)
+            else:
+                artist = str(artist_data).replace('&', ',')
+            album = result.get('album', '未知')
+
+            result_tree.insert('', 'end', values=(name, artist, album), tags=(f"search_result_{i}",))
+
     def download_single(self, item):
         """下载单个歌曲"""
         # 获取项索引
@@ -582,31 +536,23 @@ class MusicUpgradeGUI:
             return
 
         # 在新线程中执行下载
-        download_thread = threading.Thread(target=self.download_single_threaded, args=(index,))
+        download_thread = threading.Thread(target=self.download_single_async_threaded, args=(index,))
         download_thread.daemon = True
         download_thread.start()
 
-    def download_single_threaded(self, index):
-        """下载单个歌曲的线程函数"""
-        def download_callback(download_path, download_error_val):
-            try:
-                if download_error_val:
-                    logger.error(f"下载文件失败 {music_file.name}: {str(download_error_val)}")
-                    self.root.after(0, lambda: messagebox.showerror("错误", f"下载文件失败 {music_file.name}: {str(download_error_val)}"))
-                else:
-                    if download_path:
-                        logger.info(f"成功下载: {music_file.name}")
-                        # 更新表格显示为已下载
-                        self.root.after(0, lambda idx=index: self.update_table_item(idx, "已下载"))
-                        logger.info(f"成功下载: {music_file.name}")
-                        self.root.after(0, lambda: messagebox.showinfo("成功", f"成功下载: {music_file.name}"))
-                    else:
-                        logger.warning(f"下载失败: {music_file.name}")
-                        self.root.after(0, lambda: messagebox.showwarning("失败", f"下载失败: {music_file.name}"))
-            except Exception as e:
-                logger.error(f"下载过程中出错: {str(e)}")
-                self.root.after(0, lambda: messagebox.showerror("错误", f"下载过程中出错: {str(e)}"))
+    def download_single_async_threaded(self, index):
+        """在独立线程中运行异步下载"""
+        # 创建新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
 
+        try:
+            loop.run_until_complete(self.download_single_async(index))
+        finally:
+            loop.close()
+
+    async def download_single_async(self, index):
+        """异步下载单个歌曲"""
         try:
             music_file = self.music_files[index]
             matched_song = self.matched_songs[index]
@@ -619,14 +565,23 @@ class MusicUpgradeGUI:
                 output_dir = self.output_var.get() or None
 
                 # 异步下载无损音乐
-                download_lossless_music_async(
-                    self.client,
-                    matched_song['id'],
-                    "netease",
-                    music_file,
-                    output_dir,
-                    callback=download_callback
-                )
+                async with AsyncRateLimitedGDAPIClient() as client:
+                    download_path = await download_lossless_music_async(
+                        client,
+                        matched_song['id'],
+                        "netease",
+                        music_file,
+                        output_dir
+                    )
+
+                if download_path:
+                    logger.info(f"成功下载: {music_file.name}")
+                    # 更新表格显示为已下载
+                    self.root.after(0, lambda idx=index: self.update_table_item(idx, "已下载"))
+                    self.root.after(0, lambda: messagebox.showinfo("成功", f"成功下载: {music_file.name}"))
+                else:
+                    logger.warning(f"下载失败: {music_file.name}")
+                    self.root.after(0, lambda: messagebox.showwarning("失败", f"下载失败: {music_file.name}"))
             else:
                 logger.warning(f"没有匹配结果: {music_file.name}")
                 self.root.after(0, lambda: messagebox.showwarning("警告", f"没有匹配结果: {music_file.name}"))
@@ -634,7 +589,6 @@ class MusicUpgradeGUI:
         except Exception as e:
             logger.error(f"下载过程中出错: {str(e)}")
             self.root.after(0, lambda: messagebox.showerror("错误", f"下载过程中出错: {str(e)}"))
-
 
     def start_upgrade(self):
         """开始升级音乐文件"""
@@ -656,7 +610,7 @@ class MusicUpgradeGUI:
         self.disable_controls_during_download()
 
         # 在新线程中执行升级
-        upgrade_thread = threading.Thread(target=self.upgrade_files_threaded)
+        upgrade_thread = threading.Thread(target=self.upgrade_files_async_threaded)
         upgrade_thread.daemon = True
         upgrade_thread.start()
 
@@ -676,24 +630,26 @@ class MusicUpgradeGUI:
         if index < len(items):
             item_id = items[index]
             self.tree.selection_set(item_id)
-            self.tree.see(item_id)  # 确保该项可见
-            self.tree.focus(item_id)  # 设置焦点
+            self.tree.see(item_id) # 确保该项可见
+            self.tree.focus(item_id) # 设置焦点
 
-    def upgrade_files_threaded(self):
-        """升级文件的线程函数"""
+    def upgrade_files_async_threaded(self):
+        """在独立线程中运行异步升级过程"""
+        # 创建新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            loop.run_until_complete(self.upgrade_files_async())
+        finally:
+            loop.close()
+
+    async def upgrade_files_async(self):
+        """异步升级文件"""
         success_count = 0
         fail_count = 0
 
-        def process_next_file(i=0):
-            nonlocal success_count, fail_count
-
-            if i >= len(self.music_files):
-                # 所有文件处理完成
-                self.root.after(0, lambda: self.upgrade_complete(success_count, fail_count))
-                return
-
-            music_file, matched_song = self.music_files[i], self.matched_songs[i]
-
+        for i, (music_file, matched_song) in enumerate(zip(self.music_files, self.matched_songs)):
             # 更新进度
             progress = (i / len(self.music_files)) * 100
             self.root.after(0, lambda p=progress: self.progress_var.set(p))
@@ -705,52 +661,35 @@ class MusicUpgradeGUI:
             self.root.after(0, lambda idx=i: self.scroll_to_item(idx))
 
             if matched_song and matched_song.get('id'):
-                def download_callback(download_path, download_error_val):
-                    nonlocal success_count, fail_count
-                    try:
-                        if download_error_val:
-                            fail_count += 1
-                            logger.error(f"升级文件失败 {music_file.name}: {str(download_error_val)}")
-                        else:
-                            if download_path:
-                                success_count += 1
-                                logger.info(f"成功升级: {music_file.name}")
-                            else:
-                                fail_count += 1
-                                logger.warning(f"升级失败: {music_file.name}")
-                    except Exception as e:
-                        fail_count += 1
-                        logger.error(f"升级文件失败 {music_file.name}: {str(e)}")
-
-                    # 处理下一个文件
-                    self.root.after(0, lambda: process_next_file(i + 1))
-
                 try:
                     # 获取输出目录
                     output_dir = self.output_var.get() or None
 
                     # 异步下载无损音乐
-                    download_lossless_music_async(
-                        self.client,
-                        matched_song['id'],
-                        "netease",
-                        music_file,
-                        output_dir,
-                        callback=download_callback
-                    )
+                    async with AsyncRateLimitedGDAPIClient() as client:
+                        download_path = await download_lossless_music_async(
+                            client,
+                            matched_song['id'],
+                            "netease",
+                            music_file,
+                            output_dir
+                        )
+
+                    if download_path:
+                        success_count += 1
+                        logger.info(f"成功升级: {music_file.name}")
+                    else:
+                        fail_count += 1
+                        logger.warning(f"升级失败: {music_file.name}")
                 except Exception as e:
                     fail_count += 1
                     logger.error(f"升级文件失败 {music_file.name}: {str(e)}")
-                    # 处理下一个文件
-                    self.root.after(0, lambda: process_next_file(i + 1))
             else:
                 fail_count += 1
                 logger.warning(f"没有匹配结果: {music_file.name}")
-                # 处理下一个文件
-                self.root.after(0, lambda: process_next_file(i + 1))
 
-        # 开始处理第一个文件
-        process_next_file(0)
+        # 所有文件处理完成
+        self.root.after(0, lambda: self.upgrade_complete(success_count, fail_count))
 
     def upgrade_complete(self, success_count, fail_count):
         """升级完成后的处理"""
