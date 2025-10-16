@@ -1,30 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-自动音乐下载软件
-功能：读取指定目录下的音乐文件（跳过flac无损格式），使用文件名调用GD API搜索同歌曲，并下载无损格式到本地
+音乐升级核心库
+包含音乐文件扫描、匹配、下载等核心功能
 """
 
 import os
-import sys
-import argparse
 import requests
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from urllib.parse import unquote, urlparse
 from gd_api import GDAPIClient
 import logging
 import time
 from collections import deque
+from difflib import SequenceMatcher
 
-# 尝试导入 tqdm 用于进度条，如果不可用则跳过
-try:
-    from tqdm import tqdm
-    TQDM_AVAILABLE = True
-except ImportError:
-    TQDM_AVAILABLE = False
-    tqdm = lambda x, **kwargs: x  # 创建一个简单的标识函数作为替代
 
 # 配置日志
 logging.basicConfig(
@@ -40,13 +32,13 @@ class RateLimitedGDAPIClient(GDAPIClient):
     限制：5分钟内最多60次请求
     """
     def __init__(self, base_url: str = "https://music-api.gdstudio.xyz/api.php",
-                 max_requests: int = 60, time_window: int = 300, retries: int = 3, timeout: int = 30):
+                 max_requests: int = 60, time_window: int = 300, retries: int = 3, timeout: int = 10):
         super().__init__(base_url)
         self.max_requests = max_requests  # 最大请求数
         self.time_window = time_window  # 时间窗口（秒），5分钟=300秒
         self.requests = deque()  # 存储请求时间戳
         self.retries = retries  # 重试次数
-        self.timeout = timeout  # 超时时间
+        self.timeout = timeout  # 超时时间（10秒）
 
     def _check_rate_limit(self):
         """检查是否超过速率限制"""
@@ -69,7 +61,7 @@ class RateLimitedGDAPIClient(GDAPIClient):
     def _make_request(self, method, *args, **kwargs):
         """执行请求前检查速率限制，并添加重试和超时功能"""
         import time
-        from requests.exceptions import RequestException
+        from requests.exceptions import RequestException, Timeout
 
         self._check_rate_limit()
 
@@ -85,6 +77,13 @@ class RateLimitedGDAPIClient(GDAPIClient):
                 # 执行实际请求
                 result = method(*args, **kwargs)
                 return result  # 确保返回方法的返回值
+            except Timeout as e:
+                if attempt < self.retries:
+                    logger.warning(f"请求超时，第 {attempt + 1} 次重试: {str(e)}")
+                    time.sleep(2 ** attempt)  # 指数退避
+                else:
+                    logger.error(f"请求超时，已重试 {self.retries} 次: {str(e)}")
+                    raise e
             except RequestException as e:
                 if attempt < self.retries:
                     logger.warning(f"请求失败，第 {attempt + 1} 次重试: {str(e)}")
@@ -100,29 +99,37 @@ class RateLimitedGDAPIClient(GDAPIClient):
                     logger.error(f"请求失败，已重试 {self.retries} 次: {str(e)}")
                     raise e
 
-    def search(self, keyword: str, source: str = "netease", count: int = 20, pages: int = 1):
-        return self._make_request(super().search, keyword, source, count, pages)
+    def search(self, keyword: str, source: str = "netease", count: int = 20, pages: int = 1, **kwargs):
+        result = self._make_request(super().search, keyword, source, count, pages, **kwargs)
+        return result if result is not None else []
 
-    def get_song_url(self, track_id: str, source: str = "netease", br: int = 999):
-        return self._make_request(super().get_song_url, track_id, source, br)
+    def get_song_url(self, track_id: str, source: str = "netease", br: int = 999, **kwargs):
+        result = self._make_request(super().get_song_url, track_id, source, br, **kwargs)
+        return result if result is not None else {}
 
-    def get_album_art(self, pic_id: str, source: str = "netease", size: int = 300):
-        return self._make_request(super().get_album_art, pic_id, source, size)
+    def get_album_art(self, pic_id: str, source: str = "netease", size: int = 300, **kwargs):
+        result = self._make_request(super().get_album_art, pic_id, source, size, **kwargs)
+        return result if result is not None else {}
 
-    def get_lyrics(self, lyric_id: str, source: str = "netease"):
-        return self._make_request(super().get_lyrics, lyric_id, source)
+    def get_lyrics(self, lyric_id: str, source: str = "netease", **kwargs):
+        result = self._make_request(super().get_lyrics, lyric_id, source, **kwargs)
+        return result if result is not None else {}
 
-    def search_album_tracks(self, keyword: str, source: str = "netease", count: int = 20, pages: int = 1):
-        return self._make_request(super().search_album_tracks, keyword, source, count, pages)
+    def search_album_tracks(self, keyword: str, source: str = "netease", count: int = 20, pages: int = 1, **kwargs):
+        result = self._make_request(super().search_album_tracks, keyword, source, count, pages, **kwargs)
+        return result if result is not None else []
 
-    def download_song(self, track_id: str, source: str = "netease", br: int = 99, file_path: Optional[str] = None):
-        return self._make_request(super().download_song, track_id, source, br, file_path)
+    def download_song(self, track_id: str, source: str = "netease", br: int = 99, file_path: Optional[str] = None, **kwargs):
+        result = self._make_request(super().download_song, track_id, source, br, file_path, **kwargs)
+        return result if result is not None else ""
 
-    def download_album_art(self, pic_id: str, source: str = "netease", size: int = 500, file_path: Optional[str] = None):
-        return self._make_request(super().download_album_art, pic_id, source, size, file_path)
+    def download_album_art(self, pic_id: str, source: str = "netease", size: int = 500, file_path: Optional[str] = None, **kwargs):
+        result = self._make_request(super().download_album_art, pic_id, source, size, file_path, **kwargs)
+        return result if result is not None else ""
 
-    def download_lyrics(self, lyric_id: str, source: str = "netease", file_path: Optional[str] = None):
-        return self._make_request(super().download_lyrics, lyric_id, source, file_path)
+    def download_lyrics(self, lyric_id: str, source: str = "netease", file_path: Optional[str] = None, **kwargs):
+        result = self._make_request(super().download_lyrics, lyric_id, source, file_path, **kwargs)
+        return result if result is not None else ""
 
 
 def clean_filename(filename: str) -> str:
@@ -177,8 +184,6 @@ def find_best_match(search_results: List[dict], original_filename: str, match_ar
     """
     if not search_results:
         return None
-
-    from difflib import SequenceMatcher
 
     original_name = clean_filename(original_filename).lower()
 
@@ -239,29 +244,33 @@ def download_lossless_music(
     """
     # 尝试下载最高音质（999代表最高音质，通常为无损）
     try:
-        # 先尝试99音质
+        # 先尝试999音质
+        song_info = None
+        download_url = None
         try:
             song_info = client.get_song_url(track_id, source=source, br=999)
-            download_url = song_info.get('url')
+            if song_info and 'url' in song_info:
+                download_url = song_info.get('url')
         except Exception:
-            song_info = None
-            download_url = None
+            pass
 
         # 如果999音质没有可用链接，尝试740（另一个无损选项）
         if not download_url:
             try:
                 song_info = client.get_song_url(track_id, source=source, br=740)
-                download_url = song_info.get('url')
+                if song_info and 'url' in song_info:
+                    download_url = song_info.get('url')
             except Exception:
-                song_info = None
+                pass
 
         # 如果还是没有，尝试320
         if not download_url:
             try:
                 song_info = client.get_song_url(track_id, source=source, br=320)
-                download_url = song_info.get('url')
+                if song_info and 'url' in song_info:
+                    download_url = song_info.get('url')
             except Exception:
-                song_info = None
+                pass
 
         if not download_url:
             logger.warning(f"无法获取歌曲下载链接: {original_file_path.name}")
@@ -291,7 +300,7 @@ def download_lossless_music(
             logger.info(f"正在下载: {original_stem} (音质: {song_info.get('br', 'unknown')})")
         else:
             logger.info(f"正在下载: {original_stem} (音质: unknown)")
-        response = requests.get(download_url, stream=True)
+        response = requests.get(download_url, stream=True, timeout=client.timeout)
         response.raise_for_status()
 
         with open(download_file_path, 'wb') as f:
@@ -337,12 +346,12 @@ def upgrade_music_files(
     def process_music_file(music_file, idx, progress_iterable=None):
         """处理单个音乐文件的辅助函数"""
         logger.info(f"[{idx}/{len(music_files)}] 处理文件: {music_file.name}")
-        if progress_iterable and TQDM_AVAILABLE and hasattr(progress_iterable, 'set_postfix_str'):
-            progress_iterable.set_postfix_str(f"处理: {music_file.name}")
 
         try:
             # 清理文件名以用于搜索
             search_keyword = clean_filename(music_file.name)
+            # 将&替换为英文逗号
+            search_keyword = search_keyword.replace('&', ',')
             logger.debug(f"搜索关键词: {search_keyword}")
 
             # 搜索音乐
@@ -381,85 +390,90 @@ def upgrade_music_files(
             logger.error(f"处理文件时出错 {music_file.name}: {str(e)}")
             return False  # 表示失败
 
-    # 使用tqdm显示进度条（如果可用）
-    if TQDM_AVAILABLE:
-        progress_iterable = tqdm(music_files, desc="处理音乐文件", unit="file")
-        for idx, music_file in enumerate(progress_iterable, 1):
-            if process_music_file(music_file, idx, progress_iterable):
-                success_count += 1
-            else:
-                fail_count += 1
-    else:
-        for idx, music_file in enumerate(music_files, 1):
-            if process_music_file(music_file, idx):
-                success_count += 1
-            else:
-                fail_count += 1
-
-    logger.info(f"处理完成!")
-    logger.info(f"成功: {success_count}, 失败: {fail_count}, 总计: {len(music_files)}")
+    # 简单循环处理（不使用tqdm以避免依赖）
+    for idx, music_file in enumerate(music_files, 1):
+        if process_music_file(music_file, idx):
+            success_count += 1
+        else:
+            fail_count += 1
 
     logger.info(f"处理完成!")
     logger.info(f"成功: {success_count}, 失败: {fail_count}, 总计: {len(music_files)}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description='自动音乐下载软件 - 将普通音质音乐升级为无损音质')
-    parser.add_argument('directory', nargs='?', help='要处理的音乐文件目录路径')
-    parser.add_argument('-s', '--source', default='netease',
-                       choices=['netease', 'tencent', 'tidal', 'spotify', 'ytmusic',
-                               'qobuz', 'joox', 'deezer', 'migu', 'kugou', 'kuwo',
-                               'ximalaya', 'apple'],
-                       help='音乐源 (默认: netease)')
-    parser.add_argument('-q', '--quality', type=int, default=99,
-                       choices=[128, 192, 320, 740, 999],
-                       help='音质 (128/192/320/740/999, 默认: 99为无损音质)')
-    parser.add_argument('-o', '--output', help='下载文件的输出目录 (默认: 原文件所在目录)')
-    parser.add_argument('-l', '--list-sources', action='store_true', help='列出支持的音乐源')
-    parser.add_argument('-a', '--match-artist', action='store_true',
-                       help='搜索时额外匹配歌手名 (默认: 只匹配歌曲名)')
-    parser.add_argument('-r', '--retries', type=int, default=3,
-                       help='API调用重试次数 (默认: 3)')
-    parser.add_argument('-t', '--timeout', type=int, default=120,
-                       help='API调用超时时间(秒) (默认: 120)')
+def match_music_files(
+    directory: str,
+    source: str = "netease",
+    match_artist: bool = False,
+    retries: int = 3,
+    timeout: int = 30
+) -> List[Dict[str, Any]]:
+    """
+    匹配目录下的音乐文件，返回匹配结果列表
+    """
+    logger.info(f"开始扫描目录: {directory}")
 
-    args = parser.parse_args()
+    # 扫描音乐文件
+    music_files = scan_music_files(directory)
+    logger.info(f"找到 {len(music_files)} 个音乐文件")
 
-    if args.list_sources:
-        print("支持的音乐源:")
-        sources = ['netease', 'tencent', 'tidal', 'spotify', 'ytmusic',
-                  'qobuz', 'joox', 'deezer', 'migu', 'kugou', 'kuwo',
-                  'ximalaya', 'apple']
-        for source in sources:
-            print(f"  - {source}")
-        return
+    if not music_files:
+        logger.warning("没有找到需要匹配的音乐文件")
+        return []
 
-    if not args.directory:
-        logger.error("错误: 请指定要处理的目录路径")
-        parser.print_help()
-        sys.exit(1)
+    # 创建带速率限制的API客户端
+    client = RateLimitedGDAPIClient(retries=retries, timeout=timeout)
 
-    if not os.path.isdir(args.directory):
-        logger.error(f"错误: 目录不存在 - {args.directory}")
-        sys.exit(1)
+    matched_results = []
 
-    logger.info(f"开始升级音乐文件...")
-    logger.info(f"目录: {args.directory}")
-    logger.info(f"音乐源: {args.source}")
-    logger.info(f"音质: {args.quality}")
-    if args.output:
-        logger.info(f"输出目录: {args.output}")
+    for idx, music_file in enumerate(music_files, 1):
+        logger.info(f"[{idx}/{len(music_files)}] 匹配文件: {music_file.name}")
 
-    upgrade_music_files(
-        directory=args.directory,
-        source=args.source,
-        quality=args.quality,
-        output_dir=args.output,
-        match_artist=args.match_artist,
-        retries=args.retries,
-        timeout=args.timeout
-    )
+        try:
+            # 清理文件名以用于搜索
+            search_keyword = clean_filename(music_file.name)
+            # 将&替换为英文逗号
+            search_keyword = search_keyword.replace('&', ',')
+            logger.debug(f"搜索关键词: {search_keyword}")
 
+            # 搜索音乐
+            search_results = client.search(search_keyword, source=source, count=5)
 
-if __name__ == "__main__":
-    main()
+            if not search_results:
+                logger.warning(f"未找到匹配的音乐: {music_file.name}")
+                matched_results.append({
+                    "file_path": music_file,
+                    "file_name": music_file.name,
+                    "matched_song": {"name": "未找到匹配", "artist": "", "id": None}
+                })
+                continue
+
+            # 找到最佳匹配
+            best_match = find_best_match(search_results, music_file.name, match_artist)
+            if not best_match:
+                logger.warning(f"未找到最佳匹配: {music_file.name}")
+                matched_results.append({
+                    "file_path": music_file,
+                    "file_name": music_file.name,
+                    "matched_song": {"name": "未找到匹配", "artist": "", "id": None}
+                })
+                continue
+
+            logger.info(f"找到匹配: {best_match.get('name', '')} - {best_match.get('artist', '')}")
+
+            matched_results.append({
+                "file_path": music_file,
+                "file_name": music_file.name,
+                "matched_song": best_match
+            })
+
+        except Exception as e:
+            logger.error(f"匹配文件时出错 {music_file.name}: {str(e)}")
+            matched_results.append({
+                "file_path": music_file,
+                "file_name": music_file.name,
+                "matched_song": {"name": "匹配失败", "artist": "", "id": None}
+            })
+
+    logger.info(f"匹配完成! 总计: {len(music_files)}")
+    return matched_results

@@ -28,7 +28,8 @@ class GDAPIClient:
         keyword: str,
         source: str = "netease",
         count: int = 20,
-        pages: int = 1
+        pages: int = 1,
+        **kwargs
     ) -> List[Dict[str, Any]]:
         """
         搜索音乐
@@ -73,7 +74,8 @@ class GDAPIClient:
         self,
         track_id: str,
         source: str = "netease",
-        br: int = 999
+        br: int = 99,
+        **kwargs
     ) -> Dict[str, Any]:
         """
         获取歌曲链接
@@ -111,7 +113,8 @@ class GDAPIClient:
         self,
         pic_id: str,
         source: str = "netease",
-        size: int = 300
+        size: int = 300,
+        **kwargs
     ) -> Dict[str, Any]:
         """
         获取专辑图
@@ -146,7 +149,8 @@ class GDAPIClient:
     def get_lyrics(
         self,
         lyric_id: str,
-        source: str = "netease"
+        source: str = "netease",
+        **kwargs
     ) -> Dict[str, Any]:
         """
         获取歌词
@@ -179,7 +183,8 @@ class GDAPIClient:
         keyword: str,
         source: str = "netease",
         count: int = 20,
-        pages: int = 1
+        pages: int = 1,
+        **kwargs
     ) -> List[Dict[str, Any]]:
         """
         搜索专辑中的曲目列表（高级用法）
@@ -217,7 +222,8 @@ class GDAPIClient:
         track_id: str,
         source: str = "netease",
         br: int = 999,
-        file_path: Optional[str] = None
+        file_path: Optional[str] = None,
+        **kwargs
     ) -> str:
         """
         下载歌曲
@@ -258,7 +264,8 @@ class GDAPIClient:
         pic_id: str,
         source: str = "netease",
         size: int = 500,
-        file_path: Optional[str] = None
+        file_path: Optional[str] = None,
+        **kwargs
     ) -> str:
         """
         下载专辑图
@@ -298,7 +305,8 @@ class GDAPIClient:
         self,
         lyric_id: str,
         source: str = "netease",
-        file_path: Optional[str] = None
+        file_path: Optional[str] = None,
+        **kwargs
     ) -> str:
         """
         下载歌词
