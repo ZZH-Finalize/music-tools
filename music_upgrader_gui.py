@@ -14,19 +14,19 @@ from tkinter import ttk
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from music_upgrader_core import (
-    RateLimitedGDAPIClient,
+# 导入异步核心模块（包含所有功能）
+from music_upgrader_core_async import (
+    AsyncRateLimitedGDAPIClient,
+    download_lossless_music_async,
+    upgrade_music_files_async,
+    match_music_files_async,
     clean_filename,
     is_music_file,
     scan_music_files,
     find_best_match,
-    download_lossless_music,
-    match_music_files
+    match_music_files,
+    logger
 )
-
-# 从核心库导入logger
-from music_upgrader_core import logger
-
 
 from typing import Dict, Any
 
@@ -40,7 +40,7 @@ class MusicUpgradeGUI:
         self.directory = ""
         self.music_files = []
         self.matched_songs: List[Optional[Dict[str, Any]]] = []
-        self.client = RateLimitedGDAPIClient()
+        self.client = AsyncRateLimitedGDAPIClient()
 
         # 创建界面
         self.create_widgets()
@@ -175,56 +175,76 @@ class MusicUpgradeGUI:
 
     def match_files_threaded(self):
         """匹配文件的线程函数"""
-        try:
-            for i, music_file in enumerate(self.music_files):
-                # 更新进度
-                progress = (i / len(self.music_files)) * 100
-                self.root.after(0, lambda p=progress: self.progress_var.set(p))
+        def process_next_file(index=0):
+            if index >= len(self.music_files):
+                # 所有文件处理完成
+                self.root.after(0, self.matching_complete)
+                return
 
-                # 显示当前处理的文件
-                self.root.after(0, lambda f=music_file.name: self.update_status(f"正在匹配: {f}"))
+            music_file = self.music_files[index]
 
-                try:
-                    # 清理文件名以用于搜索
-                    search_keyword = clean_filename(music_file.name)
-                    # 将&替换为英文逗号
-                    search_keyword = search_keyword.replace('&', ',')
-                    logger.debug(f"搜索关键词: {search_keyword}")
+            # 更新进度
+            progress = (index / len(self.music_files)) * 100
+            self.root.after(0, lambda p=progress: self.progress_var.set(p))
 
-                    # 搜索音乐
-                    search_results = self.client.search(search_keyword, source="netease", count=5)
+            # 显示当前处理的文件
+            self.root.after(0, lambda f=music_file.name: self.update_status(f"正在匹配: {f}"))
 
-                    if not search_results:
-                        matched_song = {"name": "未找到匹配", "artist": "", "id": None}
-                    else:
-                        # 找到最佳匹配
-                        best_match = find_best_match(search_results, music_file.name, False)
-                        if not best_match:
+            try:
+                # 清理文件名以用于搜索
+                search_keyword = clean_filename(music_file.name)
+                # 将&替换为英文逗号
+                search_keyword = search_keyword.replace('&', ',')
+                logger.debug(f"搜索关键词: {search_keyword}")
+
+                # 异步搜索音乐
+                def search_callback(search_results, search_error):
+                    try:
+                        if search_error:
+                            raise search_error
+
+                        if not search_results:
                             matched_song = {"name": "未找到匹配", "artist": "", "id": None}
                         else:
-                            matched_song = best_match
+                            # 找到最佳匹配
+                            best_match = find_best_match(search_results, music_file.name, False)
+                            if not best_match:
+                                matched_song = {"name": "未找到匹配", "artist": "", "id": None}
+                            else:
+                                matched_song = best_match
 
-                    # 更新匹配结果
-                    self.matched_songs[i] = matched_song
+                        # 更新匹配结果
+                        self.matched_songs[index] = matched_song
 
-                    # 更新表格显示
-                    display_text = f"{matched_song.get('name', '未知')} - {matched_song.get('artist', ['未知'])[0] if isinstance(matched_song.get('artist'), list) else matched_song.get('artist', '未知')}"
-                    self.root.after(0, lambda idx=i, text=display_text: self.update_table_item(idx, text))
+                        # 更新表格显示
+                        display_text = f"{matched_song.get('name', '未知')} - {matched_song.get('artist', ['未知'])[0] if isinstance(matched_song.get('artist'), list) else matched_song.get('artist', '未知')}"
+                        self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text))
 
-                except Exception as e:
-                    logger.error(f"匹配文件时出错 {music_file.name}: {str(e)}")
-                    matched_song = {"name": "匹配失败", "artist": "", "id": None}
-                    self.matched_songs[i] = matched_song
-                    display_text = "匹配失败"
-                    self.root.after(0, lambda idx=i, text=display_text: self.update_table_item(idx, text))
+                    except Exception as e:
+                        logger.error(f"匹配文件时出错 {music_file.name}: {str(e)}")
+                        matched_song = {"name": "匹配失败", "artist": "", "id": None}
+                        self.matched_songs[index] = matched_song
+                        display_text = "匹配失败"
+                        self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text))
 
-            # 匹配完成
-            self.root.after(0, self.matching_complete)
+                    # 处理下一个文件
+                    self.root.after(0, lambda: process_next_file(index + 1))
 
-        except Exception as e:
-            logger.error(f"匹配过程中出错: {str(e)}")
-            self.root.after(0, lambda e=e: messagebox.showerror("错误", f"匹配过程中出错: {str(e)}"))
-            self.root.after(0, lambda: self.upgrade_btn.config(state='normal'))
+                # 启动异步搜索
+                self.client.search_async(search_keyword, source="netease", count=5, callback=search_callback)
+
+            except Exception as e:
+                logger.error(f"处理文件时出错 {music_file.name}: {str(e)}")
+                matched_song = {"name": "匹配失败", "artist": "", "id": None}
+                self.matched_songs[index] = matched_song
+                display_text = "匹配失败"
+                self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text))
+
+                # 处理下一个文件
+                self.root.after(0, lambda: process_next_file(index + 1))
+
+        # 开始处理第一个文件
+        process_next_file(0)
 
     def update_table_item(self, index, text):
         """更新表格的指定项"""
@@ -361,31 +381,41 @@ class MusicUpgradeGUI:
 
     def perform_search_async(self, index, keyword, result_tree):
         """异步执行搜索"""
-        # 在新线程中执行搜索
-        search_thread = threading.Thread(target=self._perform_search_threaded, args=(keyword, result_tree))
-        search_thread.daemon = True
-        search_thread.start()
+        # 使用异步API客户端进行搜索
+        def search_callback(result, error):
+            # 在主线程中更新UI
+            if error:
+                logger.error(f"搜索失败: {str(error)}")
+                self.root.after(0, lambda: messagebox.showerror("错误", f"搜索失败: {str(error)}"))
+            else:
+                # 在主线程中清空现有结果
+                self.root.after(0, lambda: self._clear_search_results(result_tree))
+                # 在主线程中填充结果到表格
+                self.root.after(0, lambda: self._populate_search_results(result, result_tree))
 
-    def _perform_search_threaded(self, keyword, result_tree):
-        """在后台线程中执行搜索"""
-        try:
-            # 在主线程中清空现有结果
-            self.root.after(0, lambda: self._clear_search_results(result_tree))
+        self.client.search_async(keyword, source="netease", count=20, callback=search_callback)
 
-            if not keyword:
-                return
+    # 删除这个方法，因为我们不再需要它
+    # def _perform_search_threaded(self, keyword, result_tree):
+    #     """在后台线程中执行搜索"""
+    #     try:
+    #         # 在主线程中清空现有结果
+    #         self.root.after(0, lambda: self._clear_search_results(result_tree))
 
-            # 将&替换为英文逗号
-            keyword = keyword.replace('&', ',')
-            # 执行搜索
-            search_results = self.client.search(keyword, source="netease", count=20)
+    #         if not keyword:
+    #             return
 
-            # 在主线程中填充结果到表格
-            self.root.after(0, lambda: self._populate_search_results(search_results, result_tree))
+    #         # 将&替换为英文逗号
+    #         keyword = keyword.replace('&', ',')
+    #         # 执行搜索
+    #         search_results = self.client.search(keyword, source="netease", count=20)
 
-        except Exception as e:
-            logger.error(f"搜索失败: {str(e)}")
-            self.root.after(0, lambda: messagebox.showerror("错误", f"搜索失败: {str(e)}"))
+    #         # 在主线程中填充结果到表格
+    #         self.root.after(0, lambda: self._populate_search_results(search_results, result_tree))
+
+    #     except Exception as e:
+    #         logger.error(f"搜索失败: {str(e)}")
+    #         self.root.after(0, lambda: messagebox.showerror("错误", f"搜索失败: {str(e)}"))
 
     def _clear_search_results(self, result_tree):
         """清空搜索结果"""
@@ -558,6 +588,25 @@ class MusicUpgradeGUI:
 
     def download_single_threaded(self, index):
         """下载单个歌曲的线程函数"""
+        def download_callback(download_path, download_error_val):
+            try:
+                if download_error_val:
+                    logger.error(f"下载文件失败 {music_file.name}: {str(download_error_val)}")
+                    self.root.after(0, lambda: messagebox.showerror("错误", f"下载文件失败 {music_file.name}: {str(download_error_val)}"))
+                else:
+                    if download_path:
+                        logger.info(f"成功下载: {music_file.name}")
+                        # 更新表格显示为已下载
+                        self.root.after(0, lambda idx=index: self.update_table_item(idx, "已下载"))
+                        logger.info(f"成功下载: {music_file.name}")
+                        self.root.after(0, lambda: messagebox.showinfo("成功", f"成功下载: {music_file.name}"))
+                    else:
+                        logger.warning(f"下载失败: {music_file.name}")
+                        self.root.after(0, lambda: messagebox.showwarning("失败", f"下载失败: {music_file.name}"))
+            except Exception as e:
+                logger.error(f"下载过程中出错: {str(e)}")
+                self.root.after(0, lambda: messagebox.showerror("错误", f"下载过程中出错: {str(e)}"))
+
         try:
             music_file = self.music_files[index]
             matched_song = self.matched_songs[index]
@@ -566,39 +615,25 @@ class MusicUpgradeGUI:
             self.root.after(0, lambda f=music_file.name: self.update_status(f"正在下载: {f}"))
 
             if matched_song and matched_song.get('id'):
-                try:
-                    # 获取输出目录
-                    output_dir = self.output_var.get() or None
+                # 获取输出目录
+                output_dir = self.output_var.get() or None
 
-                    # 下载无损音乐
-                    download_path = download_lossless_music(
-                        self.client,
-                        matched_song['id'],
-                        "netease",
-                        music_file,
-                        output_dir
-                    )
-
-                    if download_path:
-                        logger.info(f"成功下载: {music_file.name}")
-                        # 更新表格显示为已下载
-                        self.root.after(0, lambda idx=index: self.update_table_item(idx, "已下载"))
-                        logger.info(f"成功下载: {music_file.name}")
-                        messagebox.showinfo("成功", f"成功下载: {music_file.name}")
-                    else:
-                        logger.warning(f"下载失败: {music_file.name}")
-                        messagebox.showwarning("失败", f"下载失败: {music_file.name}")
-
-                except Exception as e:
-                    logger.error(f"下载文件失败 {music_file.name}: {str(e)}")
-                    messagebox.showerror("错误", f"下载文件失败 {music_file.name}: {str(e)}")
+                # 异步下载无损音乐
+                download_lossless_music_async(
+                    self.client,
+                    matched_song['id'],
+                    "netease",
+                    music_file,
+                    output_dir,
+                    callback=download_callback
+                )
             else:
                 logger.warning(f"没有匹配结果: {music_file.name}")
-                messagebox.showwarning("警告", f"没有匹配结果: {music_file.name}")
+                self.root.after(0, lambda: messagebox.showwarning("警告", f"没有匹配结果: {music_file.name}"))
 
         except Exception as e:
             logger.error(f"下载过程中出错: {str(e)}")
-            messagebox.showerror("错误", f"下载过程中出错: {str(e)}")
+            self.root.after(0, lambda: messagebox.showerror("错误", f"下载过程中出错: {str(e)}"))
 
 
     def start_upgrade(self):
@@ -649,53 +684,73 @@ class MusicUpgradeGUI:
         success_count = 0
         fail_count = 0
 
-        try:
-            for i, (music_file, matched_song) in enumerate(zip(self.music_files, self.matched_songs)):
-                # 更新进度
-                progress = (i / len(self.music_files)) * 100
-                self.root.after(0, lambda p=progress: self.progress_var.set(p))
+        def process_next_file(i=0):
+            nonlocal success_count, fail_count
 
-                # 显示当前处理的文件
-                self.root.after(0, lambda f=music_file.name: self.update_status(f"正在升级: {f}"))
+            if i >= len(self.music_files):
+                # 所有文件处理完成
+                self.root.after(0, lambda: self.upgrade_complete(success_count, fail_count))
+                return
 
-                # 自动滚动到当前项
-                self.root.after(0, lambda idx=i: self.scroll_to_item(idx))
+            music_file, matched_song = self.music_files[i], self.matched_songs[i]
 
-                if matched_song and matched_song.get('id'):
+            # 更新进度
+            progress = (i / len(self.music_files)) * 100
+            self.root.after(0, lambda p=progress: self.progress_var.set(p))
+
+            # 显示当前处理的文件
+            self.root.after(0, lambda f=music_file.name: self.update_status(f"正在升级: {f}"))
+
+            # 自动滚动到当前项
+            self.root.after(0, lambda idx=i: self.scroll_to_item(idx))
+
+            if matched_song and matched_song.get('id'):
+                def download_callback(download_path, download_error_val):
+                    nonlocal success_count, fail_count
                     try:
-                        # 获取输出目录
-                        output_dir = self.output_var.get() or None
-
-                        # 下载无损音乐
-                        download_path = download_lossless_music(
-                            self.client,
-                            matched_song['id'],
-                            "netease",
-                            music_file,
-                            output_dir
-                        )
-
-                        if download_path:
-                            success_count += 1
-                            logger.info(f"成功升级: {music_file.name}")
-                        else:
+                        if download_error_val:
                             fail_count += 1
-                            logger.warning(f"升级失败: {music_file.name}")
-
+                            logger.error(f"升级文件失败 {music_file.name}: {str(download_error_val)}")
+                        else:
+                            if download_path:
+                                success_count += 1
+                                logger.info(f"成功升级: {music_file.name}")
+                            else:
+                                fail_count += 1
+                                logger.warning(f"升级失败: {music_file.name}")
                     except Exception as e:
                         fail_count += 1
                         logger.error(f"升级文件失败 {music_file.name}: {str(e)}")
-                else:
+
+                    # 处理下一个文件
+                    self.root.after(0, lambda: process_next_file(i + 1))
+
+                try:
+                    # 获取输出目录
+                    output_dir = self.output_var.get() or None
+
+                    # 异步下载无损音乐
+                    download_lossless_music_async(
+                        self.client,
+                        matched_song['id'],
+                        "netease",
+                        music_file,
+                        output_dir,
+                        callback=download_callback
+                    )
+                except Exception as e:
                     fail_count += 1
-                    logger.warning(f"没有匹配结果: {music_file.name}")
+                    logger.error(f"升级文件失败 {music_file.name}: {str(e)}")
+                    # 处理下一个文件
+                    self.root.after(0, lambda: process_next_file(i + 1))
+            else:
+                fail_count += 1
+                logger.warning(f"没有匹配结果: {music_file.name}")
+                # 处理下一个文件
+                self.root.after(0, lambda: process_next_file(i + 1))
 
-            # 升级完成
-            self.root.after(0, lambda: self.upgrade_complete(success_count, fail_count))
-
-        except Exception as e:
-            logger.error(f"升级过程中出错: {str(e)}")
-            self.root.after(0, lambda e=e: messagebox.showerror("错误", f"升级过程中出错: {str(e)}"))
-            self.root.after(0, lambda: self.enable_controls_after_download())
+        # 开始处理第一个文件
+        process_next_file(0)
 
     def upgrade_complete(self, success_count, fail_count):
         """升级完成后的处理"""
