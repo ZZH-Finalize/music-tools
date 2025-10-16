@@ -243,7 +243,7 @@ class MusicUpgradeGUI:
         self.upgrade_btn.config(state='normal')
         self.enable_table_after_matching()  # 启用表格控件
         self.root.title("音乐品质升级工具")
-        messagebox.showinfo("完成", f"匹配完成！找到 {len(self.music_files)} 个音乐文件，其中 {sum(1 for s in self.matched_songs if s and s.get('id'))} 个成功匹配。")
+        messagebox.showinfo("完成", f"匹配完成！找到 {len(self.music_files)} 个音乐文件，其中 {sum(1 for s in self.matched_songs if s and isinstance(s, dict) and s.get('id'))} 个成功匹配。")
 
     def show_context_menu(self, event):
         """显示右键菜单"""
@@ -388,7 +388,14 @@ class MusicUpgradeGUI:
 
     def _populate_search_results(self, search_results, result_tree):
         """填充搜索结果到表格"""
-        for result in search_results:
+        # 为每个结果树存储搜索结果
+        if not hasattr(self, '_search_results_cache'):
+            self._search_results_cache = {}
+        # 使用result_tree的id作为键来存储结果
+        tree_id = str(result_tree)  # 使用树的字符串表示作为键
+        self._search_results_cache[tree_id] = search_results
+
+        for i, result in enumerate(search_results):
             name = result.get('name', '未知')
             # 处理艺术家信息，将&替换为逗号
             artist_data = result.get('artist', [])
@@ -400,7 +407,7 @@ class MusicUpgradeGUI:
                 artist = str(artist_data).replace('&', ',')
             album = result.get('album', '未知')
 
-            result_tree.insert('', 'end', values=(name, artist, album), tags=(str(result),))
+            result_tree.insert('', 'end', values=(name, artist, album), tags=(f"search_result_{i}",))
 
     def perform_search(self, index, keyword, result_tree):
         """执行搜索（保持向后兼容）"""
@@ -415,8 +422,15 @@ class MusicUpgradeGUI:
             # 执行搜索
             search_results = self.client.search(keyword, source="netease", count=20)
 
+            # 为每个结果树存储搜索结果
+            if not hasattr(self, '_search_results_cache'):
+                self._search_results_cache = {}
+            # 使用result_tree的id作为键来存储结果
+            tree_id = str(result_tree)  # 使用树的字符串表示作为键
+            self._search_results_cache[tree_id] = search_results
+
             # 填充结果到表格
-            for result in search_results:
+            for i, result in enumerate(search_results):
                 name = result.get('name', '未知')
                 # 处理艺术家信息，将&替换为逗号
                 artist_data = result.get('artist', [])
@@ -428,7 +442,7 @@ class MusicUpgradeGUI:
                     artist = str(artist_data).replace('&', ',')
                 album = result.get('album', '未知')
 
-                result_tree.insert('', 'end', values=(name, artist, album), tags=(str(result),))
+                result_tree.insert('', 'end', values=(name, artist, album), tags=(f"search_result_{i}",))
 
         except Exception as e:
             logger.error(f"搜索失败: {str(e)}")
@@ -446,15 +460,44 @@ class MusicUpgradeGUI:
         item = result_tree.item(selection[0])
         values = item['values']
 
-        # 获取关联的结果对象
+        # 获取关联的结果对象索引
         tags = item['tags']
         if not tags:
             messagebox.showerror("错误", "无法获取匹配结果数据")
             return
 
-        result = tags[0]  # 第一个tag是结果对象
+        tag = tags[0]  # 获取tag，格式为"search_result_X"
 
-        # 更新主窗口的匹配结果
+        # 从缓存中获取对应的结果对象
+        tree_id = str(result_tree)
+        if not hasattr(self, '_search_results_cache') or tree_id not in self._search_results_cache:
+            messagebox.showerror("错误", "搜索结果缓存不存在")
+            return
+
+        search_results = self._search_results_cache[tree_id]
+
+        # 从tag中提取索引
+        if tag.startswith("search_result_"):
+            try:
+                result_index = int(tag.split("_")[-1])
+                if 0 <= result_index < len(search_results):
+                    result = search_results[result_index]
+                else:
+                    messagebox.showerror("错误", "匹配结果索引超出范围")
+                    return
+            except ValueError:
+                messagebox.showerror("错误", "匹配结果格式错误")
+                return
+        else:
+            messagebox.showerror("错误", "匹配结果格式错误")
+            return
+
+        # 确保结果是一个字典对象
+        if not isinstance(result, dict):
+            messagebox.showerror("错误", "匹配结果格式错误")
+            return
+
+        # 更新主窗口的匹配结果 - 存储完整的结果对象而不是字符串
         self.matched_songs[index] = result
 
         # 更新主窗口表格显示
@@ -462,11 +505,11 @@ class MusicUpgradeGUI:
         if index < len(items):
             item_id = items[index]
             current_values = self.tree.item(item_id, 'values')
-            # 检查result是否为字符串
-            if isinstance(result, str):
-                display_text = result
-            else:
-                display_text = f"{result.get('name', '未知')} - {', '.join(result.get('artist', [])) if isinstance(result.get('artist'), list) else result.get('artist', '未知')}"
+
+            # 从result对象中获取歌曲名和艺术家信息用于显示，与主匹配逻辑保持一致
+            name = result.get('name', '未知')
+            artist = result.get('artist', ['未知'])[0] if isinstance(result.get('artist'), list) else result.get('artist', '未知')
+            display_text = f"{name} - {artist}"
             self.tree.item(item_id, values=(current_values[0], display_text))
 
         # 关闭窗口
@@ -483,7 +526,7 @@ class MusicUpgradeGUI:
         # 检查是否有匹配结果
         matched_song = self.matched_songs[index]
         # 检查matched_song是否为字典且有id字段
-        if not matched_song or (isinstance(matched_song, dict) and not matched_song.get('id')):
+        if not matched_song or not isinstance(matched_song, dict) or not matched_song.get('id'):
             messagebox.showwarning("警告", "该项目没有匹配结果，无法下载")
             return
 
@@ -547,7 +590,7 @@ class MusicUpgradeGUI:
             messagebox.showwarning("警告", "请先扫描音乐文件")
             return
 
-        if not any(song and song.get('id') for song in self.matched_songs if song):
+        if not any(song and isinstance(song, dict) and song.get('id') for song in self.matched_songs if song):
             messagebox.showwarning("警告", "没有可升级的匹配文件")
             return
 
