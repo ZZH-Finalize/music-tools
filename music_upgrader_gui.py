@@ -49,11 +49,33 @@ class MusicUpgradeGUI:
         self.loop = None
         self.loop_thread = None
 
+        # 日志等级变量
+        self.log_level_var = tk.StringVar(value="INFO")
+        self.log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
         # 创建界面
         self.create_widgets()
 
+    def change_log_level(self, event=None):
+        """更改日志等级"""
+        import logging
+        new_level = self.log_level_var.get()
+        logger.setLevel(getattr(logging, new_level))
+        logger.info(f"日志等级已更改为: {new_level}")
+
     def create_widgets(self):
-        # 顶部路径输入区域
+        # 顶部控制区域
+        top_control_frame = ttk.Frame(self.root)
+        top_control_frame.pack(pady=5, padx=10, fill='x')
+
+        # 日志等级下拉框
+        ttk.Label(top_control_frame, text="日志等级:").pack(side='left', padx=(0, 5))
+        log_level_combo = ttk.Combobox(top_control_frame, textvariable=self.log_level_var,
+                                       values=self.log_levels, state="readonly", width=10)
+        log_level_combo.pack(side='left', padx=(0, 10))
+        log_level_combo.bind('<<ComboboxSelected>>', self.change_log_level)
+
+        # 路径输入区域
         path_frame = ttk.Frame(self.root)
         path_frame.pack(pady=10, padx=10, fill='x')
 
