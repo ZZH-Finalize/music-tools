@@ -99,8 +99,8 @@ class MusicStateManager:
         """检查是否可以手动匹配指定项"""
         if 0 <= index < len(self.status_list):
             current_status = self.status_list[index]
-            # 除了已忽略、已下载完成和手动下载完成的状态外，其他状态都可以手动匹配
-            return current_status not in [MusicStatus.IGNORED, MusicStatus.AUTO_DOWNLOAD_COMPLETE, MusicStatus.MANUAL_DOWNLOAD_COMPLETE]
+            # 除了已忽略状态外，其他状态都可以手动匹配（包括已下载完成的歌曲）
+            return current_status != MusicStatus.IGNORED
         return False
 
     def can_auto_match(self, index: int) -> bool:
@@ -770,7 +770,16 @@ class MusicUpgradeGUI:
         """创建手动匹配窗口"""
         # 创建新窗口
         match_window = tk.Toplevel(self.root)
-        match_window.title(f"手动匹配 - {original_filename}")
+
+        # 检查当前状态，如果是下载完成状态，添加相应提示
+        current_status = self.status_manager.get_status(index) if self.status_manager else None
+        is_rematch_after_download = current_status in [MusicStatus.AUTO_DOWNLOAD_COMPLETE, MusicStatus.MANUAL_DOWNLOAD_COMPLETE]
+
+        if is_rematch_after_download:
+            match_window.title(f"重新匹配已下载歌曲 - {original_filename}")
+        else:
+            match_window.title(f"手动匹配 - {original_filename}")
+
         match_window.geometry("600x400")
         match_window.transient(self.root)  # 设置为父窗口的临时窗口
         match_window.grab_set()  # 模态窗口
@@ -780,6 +789,13 @@ class MusicUpgradeGUI:
         x = (match_window.winfo_screenwidth() // 2) - (match_window.winfo_width() // 2)
         y = (match_window.winfo_screenheight() // 2) - (match_window.winfo_height() // 2)
         match_window.geometry(f"+{x}+{y}")
+
+        # 如果是重新匹配下载完成的歌曲，添加提示信息
+        if is_rematch_after_download:
+            warning_label = ttk.Label(match_window, text="⚠️ 正在重新匹配已下载的歌曲", foreground="orange")
+            warning_label.pack(pady=(10, 0))
+            info_label = ttk.Label(match_window, text="选择新的匹配项后，可以重新下载", foreground="gray")
+            info_label.pack(pady=(0, 5))
 
         # 创建界面元素
         # 搜索框
@@ -900,6 +916,10 @@ class MusicUpgradeGUI:
             old_status = self.status_manager.get_status(index)
             self.status_manager.set_status(index, MusicStatus.MANUAL_MATCHED)
             logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MANUAL_MATCHED.value}")
+
+            # 如果之前的歌曲已经下载完成，记录这个重新匹配的行为
+            if old_status in [MusicStatus.AUTO_DOWNLOAD_COMPLETE, MusicStatus.MANUAL_DOWNLOAD_COMPLETE]:
+                logger.info(f"重新匹配已下载的歌曲: {self.music_files[index].name} (原状态: {old_status.value})")
 
         # 更新主窗口表格显示
         items = self.tree.get_children()
@@ -1053,13 +1073,13 @@ class MusicUpgradeGUI:
 
                 if download_path:
                     logger.info(f"成功下载: {music_file.name}")
-                    # 更新状态为已下载(自动)
+                    # 更新状态为已下载(手动) - 因为这是通过右键菜单手动下载的
                     if self.status_manager:
                         old_status = self.status_manager.get_status(index)
-                        self.status_manager.set_status(index, MusicStatus.AUTO_DOWNLOAD_COMPLETE)
-                        logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.AUTO_DOWNLOAD_COMPLETE.value}")
+                        self.status_manager.set_status(index, MusicStatus.MANUAL_DOWNLOAD_COMPLETE)
+                        logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MANUAL_DOWNLOAD_COMPLETE.value}")
                     # 下载完成后，第二列保持不变，只更新状态
-                    self.root.after(0, lambda idx=index: self.update_table_item(idx, None, MusicStatus.AUTO_DOWNLOAD_COMPLETE.value))
+                    self.root.after(0, lambda idx=index: self.update_table_item(idx, None, MusicStatus.MANUAL_DOWNLOAD_COMPLETE.value))
                     self.root.after(0, lambda: messagebox.showinfo("成功", f"成功下载: {music_file.name}"))
                 else:
                     logger.warning(f"下载失败: {music_file.name}")
@@ -1189,7 +1209,7 @@ class MusicUpgradeGUI:
                     if download_path:
                         success_count += 1
                         logger.info(f"成功升级: {music_file.name}")
-                        # 更新状态为已下载(自动)
+                        # 更新状态为已下载(自动) - 因为这是通过自动升级下载的
                         if self.status_manager:
                             old_status = self.status_manager.get_status(i)
                             self.status_manager.set_status(i, MusicStatus.AUTO_DOWNLOAD_COMPLETE)
