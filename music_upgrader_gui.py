@@ -15,6 +15,7 @@ from tkinter import ttk
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import concurrent.futures
+from enum import Enum
 
 # 导入异步核心模块（包含所有功能）
 from music_upgrader_core_async import (
@@ -32,18 +33,114 @@ from music_upgrader_core_async import (
 
 from typing import Dict, Any
 
+# 定义状态枚举
+class MusicStatus(Enum):
+    MATCH_PENDING = "等待匹配"      # 等待匹配
+    AUTO_MATCHED = "匹配(自动)"     # 匹配(自动)
+    MANUAL_MATCHED = "匹配(手动)"   # 匹配(手动)
+    MATCH_FAIL = "匹配失败"        # 匹配失败
+    AUTO_DOWNLOAD_COMPLETE = "已下载(自动)"  # 已下载(自动)
+    MANUAL_DOWNLOAD_COMPLETE = "已下载(手动)"  # 已下载(手动)
+    DOWNLOAD_FAIL = "下载失败"     # 下载失败
+    IGNORED = "已忽略"             # 已忽略
+
+# 状态机管理类
+class MusicStateManager:
+    def __init__(self, num_items: int):
+        # 当前状态列表
+        self.status_list = [MusicStatus.MATCH_PENDING for _ in range(num_items)]
+        # 保存被忽略前的状态列表，使用Optional[MusicStatus]类型
+        self.ignored_status_backup = [None for _ in range(num_items)]  # type: List[Optional[MusicStatus]]
+
+    def get_status(self, index: int) -> Optional[MusicStatus]:
+        """获取指定索引的状态"""
+        if 0 <= index < len(self.status_list):
+            return self.status_list[index]
+        return None
+
+    def set_status(self, index: int, status: MusicStatus) -> bool:
+        """设置指定索引的状态"""
+        if 0 <= index < len(self.status_list):
+            self.status_list[index] = status
+            return True
+        return False
+
+    def ignore_item(self, index: int) -> bool:
+        """忽略指定项"""
+        if 0 <= index < len(self.status_list):
+            # 保存当前状态
+            self.ignored_status_backup[index] = self.status_list[index]
+            # 设置为已忽略状态
+            self.status_list[index] = MusicStatus.IGNORED
+            return True
+        return False
+
+    def unignore_item(self, index: int) -> bool:
+        """取消忽略指定项，恢复到之前的状态"""
+        if 0 <= index < len(self.status_list) and self.ignored_status_backup[index] is not None:
+            # 恢复到之前的状态
+            previous_status = self.ignored_status_backup[index]
+            if previous_status is not None:
+                self.status_list[index] = previous_status
+            # 清空备份状态
+            self.ignored_status_backup[index] = None
+            return True
+        return False
+
+    def can_ignore(self, index: int) -> bool:
+        """检查是否可以忽略指定项"""
+        if 0 <= index < len(self.status_list):
+            current_status = self.status_list[index]
+            # 任何状态都可以被忽略
+            return True
+        return False
+
+    def can_manual_match(self, index: int) -> bool:
+        """检查是否可以手动匹配指定项"""
+        if 0 <= index < len(self.status_list):
+            current_status = self.status_list[index]
+            # 除了已忽略和已下载的状态外，其他状态都可以手动匹配
+            return current_status not in [MusicStatus.IGNORED, MusicStatus.AUTO_DOWNLOAD_COMPLETE, MusicStatus.MANUAL_DOWNLOAD_COMPLETE]
+        return False
+
+    def can_auto_match(self, index: int) -> bool:
+        """检查是否可以自动匹配指定项"""
+        if 0 <= index < len(self.status_list):
+            current_status = self.status_list[index]
+            # 只有等待匹配和匹配失败的状态可以自动匹配
+            return current_status in [MusicStatus.MATCH_PENDING, MusicStatus.MATCH_FAIL]
+        return False
+
+    def can_download(self, index: int) -> bool:
+        """检查是否可以下载指定项"""
+        if 0 <= index < len(self.status_list):
+            current_status = self.status_list[index]
+            # 只有匹配成功的状态可以下载
+            return current_status in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED]
+        return False
+
+    def can_unignore(self, index: int) -> bool:
+        """检查是否可以取消忽略指定项"""
+        if 0 <= index < len(self.status_list):
+            current_status = self.status_list[index]
+            # 只有已忽略的状态可以取消忽略
+            return current_status == MusicStatus.IGNORED
+        return False
+
 
 class MusicUpgradeGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("音乐品质升级工具")
-        self.root.geometry("1000x700")
+        self.root.geometry("1200x700")  # 增加宽度以容纳新列
 
         # 初始化变量
         self.directory = ""
         self.music_files = []
         self.matched_songs: List[Optional[Dict[str, Any]]] = []
+        self.original_matched_songs: List[Optional[Dict[str, Any]]] = []  # 保存原始匹配结果
         self.client = AsyncRateLimitedGDAPIClient()
+        self.status_manager = None  # 状态管理器，将在扫描文件时初始化
 
         # 用于控制异步任务的事件循环
         self.loop = None
@@ -109,11 +206,13 @@ class MusicUpgradeGUI:
         table_frame.pack(pady=10, padx=10, fill='both', expand=True)
 
         # 创建Treeview作为表格控件
-        self.tree = ttk.Treeview(table_frame, columns=('original', 'matched'), show='headings', height=15)
+        self.tree = ttk.Treeview(table_frame, columns=('original', 'matched', 'status'), show='headings', height=15)
         self.tree.heading('original', text='低音质音乐文件')
         self.tree.heading('matched', text='匹配的音乐文件')
+        self.tree.heading('status', text='状态')
         self.tree.column('original', width=400)
         self.tree.column('matched', width=400)
+        self.tree.column('status', width=150)
 
         # 添加滚动条
         tree_scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
@@ -164,6 +263,8 @@ class MusicUpgradeGUI:
         try:
             self.music_files = scan_music_files(self.directory)
             self.matched_songs = [None] * len(self.music_files) # 初始化匹配列表
+            # 初始化状态管理器
+            self.status_manager = MusicStateManager(len(self.music_files))
 
             # 清空表格
             for item in self.tree.get_children():
@@ -171,7 +272,7 @@ class MusicUpgradeGUI:
 
             # 添加音乐文件到表格
             for file_path in self.music_files:
-                self.tree.insert('', 'end', values=(file_path.name, '等待匹配...'))
+                self.tree.insert('', 'end', values=(file_path.name, '等待匹配...', MusicStatus.MATCH_PENDING.value))
 
             # 启用升级按钮
             self.upgrade_btn.config(state='normal')
@@ -188,6 +289,9 @@ class MusicUpgradeGUI:
         # 在匹配期间禁用表格控件
         self.disable_table_during_matching()
 
+        # 初始化原始匹配结果列表
+        self.original_matched_songs = [None] * len(self.music_files)
+
         # 在新线程中运行匹配过程
         matching_thread = threading.Thread(target=self.match_files_async_threaded)
         matching_thread.daemon = True
@@ -195,7 +299,7 @@ class MusicUpgradeGUI:
 
     def disable_table_during_matching(self):
         """在匹配期间禁用表格控件"""
-        self.tree.config(selectmode='none')  # 禁用表格选择
+        self.tree.config(selectmode='none')  # 禁用表格选择，但保留右键菜单功能
 
     def enable_table_after_matching(self):
         """匹配完成后启用表格控件"""
@@ -247,28 +351,65 @@ class MusicUpgradeGUI:
 
                 # 更新匹配结果
                 self.matched_songs[index] = matched_song
+                # 同时保存到原始匹配结果列表
+                self.original_matched_songs[index] = matched_song
+
+                # 更新状态
+                if self.status_manager:
+                    if matched_song and matched_song.get('id'):
+                        # 匹配成功
+                        old_status = self.status_manager.get_status(index)
+                        self.status_manager.set_status(index, MusicStatus.AUTO_MATCHED)
+                        logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.AUTO_MATCHED.value}")
+                        status_text = MusicStatus.AUTO_MATCHED.value
+                    else:
+                        # 匹配失败
+                        old_status = self.status_manager.get_status(index)
+                        self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
+                        logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
+                        status_text = MusicStatus.MATCH_FAIL.value
+                else:
+                    # 如果状态管理器不存在，使用默认值
+                    status_text = "未知状态"
 
                 # 更新表格显示
-                display_text = f"{matched_song.get('name', '未知')} - {matched_song.get('artist', ['未知'])[0] if isinstance(matched_song.get('artist'), list) else matched_song.get('artist', '未知')}"
-                self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text))
+                if matched_song and matched_song.get('id'):
+                    display_text = f"{matched_song.get('name', '未知')} - {matched_song.get('artist', ['未知'])[0] if isinstance(matched_song.get('artist'), list) else matched_song.get('artist', '未知')}"
+                else:
+                    display_text = "未找到匹配" if not matched_song or not matched_song.get('id') else "匹配失败"
+                self.root.after(0, lambda idx=index, text=display_text, st=status_text: self.update_table_item(idx, text, st))
 
             except Exception as e:
                 logger.error(f"匹配文件时出错 {music_file.name}: {str(e)}")
                 matched_song = {"name": "匹配失败", "artist": "", "id": None}
                 self.matched_songs[index] = matched_song
+                # 同时保存到原始匹配结果列表
+                self.original_matched_songs[index] = matched_song
+
+                # 更新状态为匹配失败
+                if self.status_manager:
+                    old_status = self.status_manager.get_status(index)
+                    self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
+                    logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
+
                 display_text = "匹配失败"
-                self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text))
+                self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text, MusicStatus.MATCH_FAIL.value))
 
         # 所有文件处理完成
         self.root.after(0, self.matching_complete)
 
-    def update_table_item(self, index, text):
+    def update_table_item(self, index, text, status_text=None):
         """更新表格的指定项"""
         items = self.tree.get_children()
         if index < len(items):
             item_id = items[index]
             current_values = self.tree.item(item_id, 'values')
-            self.tree.item(item_id, values=(current_values[0], text))
+            if status_text is None:
+                # 如果没有提供状态文本，保持当前状态不变
+                self.tree.item(item_id, values=(current_values[0], text, current_values[2]))
+            else:
+                # 同时更新匹配文本和状态
+                self.tree.item(item_id, values=(current_values[0], text, status_text))
 
     def update_status(self, message):
         """更新状态信息"""
@@ -276,7 +417,7 @@ class MusicUpgradeGUI:
 
     def matching_complete(self):
         """匹配完成后的处理"""
-        self.progress_var.set(100)
+        self.progress_var.set(10)
         self.upgrade_btn.config(state='normal')
         self.enable_table_after_matching() # 启用表格控件
         self.root.title("音乐品质升级工具")
@@ -290,11 +431,32 @@ class MusicUpgradeGUI:
             # 选中该项
             self.tree.selection_set(item)
 
+            # 获取项索引
+            items = self.tree.get_children()
+            index = items.index(item)
+
+            # 获取当前状态
+            current_status = self.status_manager.get_status(index) if self.status_manager else None
+
             # 创建右键菜单
             context_menu = tk.Menu(self.root, tearoff=0)
-            context_menu.add_command(label="忽略此项", command=lambda: self.ignore_item(item))
-            context_menu.add_command(label="手动匹配", command=lambda: self.manual_match(item))
-            context_menu.add_command(label="下载", command=lambda: self.download_single(item))
+
+            # 根据当前状态添加可用的菜单项
+            if current_status == MusicStatus.IGNORED:
+                # 如果是已忽略状态，只显示取消忽略
+                context_menu.add_command(label="取消忽略", command=lambda: self.unignore_item(item))
+            else:
+                # 根据状态决定是否可以忽略
+                if self.status_manager and self.status_manager.can_ignore(index):
+                    context_menu.add_command(label="忽略此项", command=lambda: self.ignore_item(item))
+
+                # 根据状态决定是否可以手动匹配
+                if self.status_manager and self.status_manager.can_manual_match(index):
+                    context_menu.add_command(label="手动匹配", command=lambda: self.manual_match(item))
+
+                # 根据状态决定是否可以下载
+                if self.status_manager and self.status_manager.can_download(index):
+                    context_menu.add_command(label="下载", command=lambda: self.download_single(item))
 
             # 显示菜单
             context_menu.post(event.x_root, event.y_root)
@@ -308,11 +470,142 @@ class MusicUpgradeGUI:
         # 更新匹配结果为忽略
         self.matched_songs[index] = {"name": "已忽略", "artist": "", "id": None}
 
+        # 更新状态为已忽略
+        if self.status_manager:
+            old_status = self.status_manager.get_status(index)
+            self.status_manager.ignore_item(index)
+            logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.IGNORED.value}")
+
         # 更新表格显示
         current_values = self.tree.item(item, 'values')
-        self.tree.item(item, values=(current_values[0], "已忽略"))
+        self.tree.item(item, values=(current_values[0], "已忽略", MusicStatus.IGNORED.value))
 
         logger.info(f"已忽略项: {current_values[0]}")
+
+    def unignore_item(self, item):
+        """取消忽略指定项，恢复到原始匹配状态"""
+        # 获取项索引
+        items = self.tree.get_children()
+        index = items.index(item)
+
+        # 更新状态为已取消忽略
+        if self.status_manager:
+            old_status = self.status_manager.get_status(index)
+            self.status_manager.unignore_item(index)
+            new_status = self.status_manager.get_status(index)
+            logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {new_status.value if new_status else 'None'}")
+
+        # 检查是否有原始匹配结果
+        if (index < len(self.original_matched_songs) and
+            self.original_matched_songs[index] is not None):
+            # 恢复原始匹配结果
+            original_result = self.original_matched_songs[index]
+            self.matched_songs[index] = original_result
+
+            # 更新表格显示
+            if original_result and isinstance(original_result, dict):
+                display_text = f"{original_result.get('name', '未知')} - {original_result.get('artist', ['未知'])[0] if isinstance(original_result.get('artist'), list) and original_result.get('artist') else original_result.get('artist', '未知')}"
+                # 更新状态文本
+                if self.status_manager:
+                    original_status = self.status_manager.get_status(index)
+                    if original_status:
+                        self.root.after(0, lambda idx=index, text=display_text, st=original_status.value: self.update_table_item(idx, text, st))
+                    else:
+                        self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text))
+                else:
+                    self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text))
+            else:
+                self.root.after(0, lambda idx=index: self.update_table_item(idx, "未知"))
+        else:
+            # 如果没有原始匹配结果，则重新匹配
+            original_filename = self.music_files[index].name
+
+            # 清理文件名以用于搜索
+            search_keyword = clean_filename(original_filename)
+            # 将&替换为英文逗号
+            search_keyword = search_keyword.replace('&', ',')
+            logger.debug(f"重新匹配关键词: {search_keyword}")
+
+            # 在新线程中重新匹配该文件
+            matching_thread = threading.Thread(target=self.rematch_single_file, args=(index, search_keyword))
+            matching_thread.daemon = True
+            matching_thread.start()
+
+        logger.info(f"已取消忽略项: {self.music_files[index].name}")
+
+    def rematch_single_file(self, index, search_keyword):
+        """在后台线程中重新匹配单个文件"""
+        # 创建新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            loop.run_until_complete(self._rematch_single_file_async(index, search_keyword))
+        finally:
+            loop.close()
+
+    async def _rematch_single_file_async(self, index, search_keyword):
+        """异步重新匹配单个文件"""
+        try:
+            # 异步搜索音乐
+            async with AsyncRateLimitedGDAPIClient() as client:
+                search_results = await client.search(search_keyword, source="netease", count=5)
+
+            if not search_results:
+                matched_song = {"name": "未找到匹配", "artist": "", "id": None}
+            else:
+                # 找到最佳匹配
+                best_match = find_best_match(search_results, self.music_files[index].name, False)
+                if not best_match:
+                    matched_song = {"name": "未找到匹配", "artist": "", "id": None}
+                else:
+                    matched_song = best_match
+
+            # 更新匹配结果
+            self.matched_songs[index] = matched_song
+            # 同时保存到原始匹配结果列表
+            self.original_matched_songs[index] = matched_song
+
+            # 更新状态
+            if self.status_manager:
+                old_status = self.status_manager.get_status(index)
+                if matched_song and matched_song.get('id'):
+                    # 匹配成功
+                    self.status_manager.set_status(index, MusicStatus.AUTO_MATCHED)
+                    logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.AUTO_MATCHED.value}")
+                    status_text = MusicStatus.AUTO_MATCHED.value
+                else:
+                    # 匹配失败
+                    self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
+                    logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
+                    status_text = MusicStatus.MATCH_FAIL.value
+            else:
+                # 如果状态管理器不存在，使用默认值
+                status_text = "未知状态"
+
+            # 更新表格显示
+            if matched_song and matched_song.get('id'):
+                display_text = f"{matched_song.get('name', '未知')} - {matched_song.get('artist', ['未知'])[0] if isinstance(matched_song.get('artist'), list) else matched_song.get('artist', '未知')}"
+            else:
+                display_text = "未找到匹配" if not matched_song or not matched_song.get('id') else "匹配失败"
+            self.root.after(0, lambda idx=index, text=display_text, st=status_text: self.update_table_item(idx, text, st))
+
+            logger.info(f"重新匹配完成: {self.music_files[index].name}")
+        except Exception as e:
+            logger.error(f"重新匹配文件时出错 {self.music_files[index].name}: {str(e)}")
+            matched_song = {"name": "匹配失败", "artist": "", "id": None}
+            self.matched_songs[index] = matched_song
+            # 同时保存到原始匹配结果列表
+            self.original_matched_songs[index] = matched_song
+
+            # 更新状态为匹配失败
+            if self.status_manager:
+                old_status = self.status_manager.get_status(index)
+                self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
+                logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
+
+            display_text = "匹配失败"
+            self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text, MusicStatus.MATCH_FAIL.value))
 
     def manual_match(self, item):
         """手动匹配指定项"""
@@ -454,6 +747,12 @@ class MusicUpgradeGUI:
         # 更新主窗口的匹配结果 - 存储完整的结果对象而不是字符串
         self.matched_songs[index] = result
 
+        # 更新状态为手动匹配成功
+        if self.status_manager:
+            old_status = self.status_manager.get_status(index)
+            self.status_manager.set_status(index, MusicStatus.MANUAL_MATCHED)
+            logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MANUAL_MATCHED.value}")
+
         # 更新主窗口表格显示
         items = self.tree.get_children()
         if index < len(items):
@@ -464,7 +763,7 @@ class MusicUpgradeGUI:
             name = result.get('name', '未知')
             artist = result.get('artist', ['未知'])[0] if isinstance(result.get('artist'), list) else result.get('artist', '未知')
             display_text = f"{name} - {artist}"
-            self.tree.item(item_id, values=(current_values[0], display_text))
+            self.tree.item(item_id, values=(current_values[0], display_text, MusicStatus.MANUAL_MATCHED.value))
 
         # 关闭窗口
         window.destroy()
@@ -599,11 +898,22 @@ class MusicUpgradeGUI:
 
                 if download_path:
                     logger.info(f"成功下载: {music_file.name}")
+                    # 更新状态为已下载(自动)
+                    if self.status_manager:
+                        old_status = self.status_manager.get_status(index)
+                        self.status_manager.set_status(index, MusicStatus.AUTO_DOWNLOAD_COMPLETE)
+                        logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.AUTO_DOWNLOAD_COMPLETE.value}")
                     # 更新表格显示为已下载
-                    self.root.after(0, lambda idx=index: self.update_table_item(idx, "已下载"))
+                    self.root.after(0, lambda idx=index: self.update_table_item(idx, "已下载", MusicStatus.AUTO_DOWNLOAD_COMPLETE.value))
                     self.root.after(0, lambda: messagebox.showinfo("成功", f"成功下载: {music_file.name}"))
                 else:
                     logger.warning(f"下载失败: {music_file.name}")
+                    # 更新状态为下载失败
+                    if self.status_manager:
+                        old_status = self.status_manager.get_status(index)
+                        self.status_manager.set_status(index, MusicStatus.DOWNLOAD_FAIL)
+                        logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.DOWNLOAD_FAIL.value}")
+                    self.root.after(0, lambda idx=index: self.update_table_item(idx, "下载失败", MusicStatus.DOWNLOAD_FAIL.value))
                     self.root.after(0, lambda: messagebox.showwarning("失败", f"下载失败: {music_file.name}"))
             else:
                 logger.warning(f"没有匹配结果: {music_file.name}")
@@ -614,19 +924,30 @@ class MusicUpgradeGUI:
             self.root.after(0, lambda: messagebox.showerror("错误", f"下载过程中出错: {str(e)}"))
 
     def start_upgrade(self):
-        """开始升级音乐文件"""
+        """开始升级音乐文件 - 自动下载所有匹配的文件（仅下载AUTO_MATCHED和MANUAL_MATCHED状态的文件）"""
         if not self.directory or not self.music_files:
             logger.warning("请先扫描音乐文件")
             messagebox.showwarning("警告", "请先扫描音乐文件")
             return
 
-        if not any(song and isinstance(song, dict) and song.get('id') for song in self.matched_songs if song):
+        # 计算可自动下载的文件数量（只考虑AUTO_MATCHED和MANUAL_MATCHED状态的文件）
+        downloadable_count = 0
+        if self.status_manager:
+            for i in range(len(self.music_files)):
+                status = self.status_manager.get_status(i)
+                if status in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED]:
+                    downloadable_count += 1
+        else:
+            # 如果没有状态管理器，使用原始逻辑
+            downloadable_count = sum(1 for song in self.matched_songs if song and isinstance(song, dict) and song.get('id'))
+
+        if downloadable_count == 0:
             logger.warning("没有可升级的匹配文件")
             messagebox.showwarning("警告", "没有可升级的匹配文件")
             return
 
         # 确认是否继续
-        if not messagebox.askyesno("确认", f"将要升级 {len(self.music_files)} 个文件，是否继续？"):
+        if not messagebox.askyesno("确认", f"将要升级 {downloadable_count} 个文件，是否继续？"):
             return
 
         # 禁用控件
@@ -646,6 +967,8 @@ class MusicUpgradeGUI:
         """下载完成后启用控件"""
         self.upgrade_btn.config(state='normal')
         self.tree.config(selectmode='browse')  # 启用表格选择
+        # 绑定右键菜单事件
+        self.tree.bind("<Button-3>", self.show_context_menu)  # 右键点击
 
     def scroll_to_item(self, index):
         """滚动到指定项"""
@@ -673,6 +996,14 @@ class MusicUpgradeGUI:
         fail_count = 0
 
         for i, (music_file, matched_song) in enumerate(zip(self.music_files, self.matched_songs)):
+            # 检查状态管理器是否存在以及当前项是否处于可下载状态
+            can_download = True
+            if self.status_manager:
+                current_status = self.status_manager.get_status(i)
+                # 只处理AUTO_MATCHED或MANUAL_MATCHED状态的文件
+                if current_status not in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED]:
+                    can_download = False
+
             # 更新进度
             progress = (i / len(self.music_files)) * 100
             self.root.after(0, lambda p=progress: self.progress_var.set(p))
@@ -683,7 +1014,7 @@ class MusicUpgradeGUI:
             # 自动滚动到当前项
             self.root.after(0, lambda idx=i: self.scroll_to_item(idx))
 
-            if matched_song and matched_song.get('id'):
+            if can_download and matched_song and matched_song.get('id'):
                 try:
                     # 获取输出目录
                     output_dir = self.output_var.get() or None
@@ -701,15 +1032,38 @@ class MusicUpgradeGUI:
                     if download_path:
                         success_count += 1
                         logger.info(f"成功升级: {music_file.name}")
+                        # 更新状态为已下载(自动)
+                        if self.status_manager:
+                            old_status = self.status_manager.get_status(i)
+                            self.status_manager.set_status(i, MusicStatus.AUTO_DOWNLOAD_COMPLETE)
+                            logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.AUTO_DOWNLOAD_COMPLETE.value}")
+                        # 更新表格显示为已下载
+                        self.root.after(0, lambda idx=i: self.update_table_item(idx, "已下载", MusicStatus.AUTO_DOWNLOAD_COMPLETE.value))
                     else:
                         fail_count += 1
                         logger.warning(f"升级失败: {music_file.name}")
+                        # 更新状态为下载失败
+                        if self.status_manager:
+                            old_status = self.status_manager.get_status(i)
+                            self.status_manager.set_status(i, MusicStatus.DOWNLOAD_FAIL)
+                            logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.DOWNLOAD_FAIL.value}")
+                        self.root.after(0, lambda idx=i: self.update_table_item(idx, "下载失败", MusicStatus.DOWNLOAD_FAIL.value))
                 except Exception as e:
                     fail_count += 1
                     logger.error(f"升级文件失败 {music_file.name}: {str(e)}")
+                    # 更新状态为下载失败
+                    if self.status_manager:
+                        old_status = self.status_manager.get_status(i)
+                        self.status_manager.set_status(i, MusicStatus.DOWNLOAD_FAIL)
+                        logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.DOWNLOAD_FAIL.value}")
+                    self.root.after(0, lambda idx=i: self.update_table_item(idx, "下载失败", MusicStatus.DOWNLOAD_FAIL.value))
             else:
-                fail_count += 1
-                logger.warning(f"没有匹配结果: {music_file.name}")
+                # 如果文件状态不是可下载的，跳过
+                if self.status_manager and self.status_manager.get_status(i) not in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED]:
+                    logger.info(f"跳过文件（状态不可下载）: {music_file.name}")
+                else:
+                    fail_count += 1
+                    logger.warning(f"没有匹配结果: {music_file.name}")
 
         # 所有文件处理完成
         self.root.after(0, lambda: self.upgrade_complete(success_count, fail_count))
