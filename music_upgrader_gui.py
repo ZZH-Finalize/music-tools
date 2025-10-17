@@ -152,6 +152,10 @@ class MusicUpgradeGUI:
         self.log_level_var = tk.StringVar(value="INFO")
         self.log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
+        # 音乐源变量
+        self.music_source_var = tk.StringVar(value="netease")
+        self.music_sources = ["netease", "qq", "kuwo", "kugou", "migu"]
+
         # 创建界面
         self.create_widgets()
 
@@ -162,6 +166,12 @@ class MusicUpgradeGUI:
         new_level = self.log_level_var.get()
         logger.setLevel(getattr(logging, new_level))
         logger.info(f"日志等级已更改为: {new_level}")
+
+    def change_music_source(self, event=None):
+        """更改音乐源"""
+        logger.debug("下拉框-更改音乐源-被选择")
+        new_source = self.music_source_var.get()
+        logger.info(f"音乐源已更改为: {new_source}")
 
     def create_widgets(self):
         # 顶部控制区域
@@ -175,6 +185,13 @@ class MusicUpgradeGUI:
         log_level_combo.pack(side='left', padx=(0, 10))
         log_level_combo.bind('<<ComboboxSelected>>', self.change_log_level)
 
+        # 音乐源下拉框
+        ttk.Label(top_control_frame, text="音乐源:").pack(side='left', padx=(10, 5))
+        self.music_source_combo = ttk.Combobox(top_control_frame, textvariable=self.music_source_var,
+                                               values=self.music_sources, state="readonly", width=10)
+        self.music_source_combo.pack(side='left', padx=(0, 10))
+        self.music_source_combo.bind('<<ComboboxSelected>>', self.change_music_source)
+
         # 路径输入区域
         path_frame = ttk.Frame(self.root)
         path_frame.pack(pady=10, padx=10, fill='x')
@@ -182,11 +199,11 @@ class MusicUpgradeGUI:
         ttk.Label(path_frame, text="参考目录:").pack(side='left')
 
         self.path_var = tk.StringVar()
-        path_entry = ttk.Entry(path_frame, textvariable=self.path_var, width=60)
-        path_entry.pack(side='left', padx=(5, 5), fill='x', expand=True)
+        self.path_entry = ttk.Entry(path_frame, textvariable=self.path_var, width=60)
+        self.path_entry.pack(side='left', padx=(5, 5), fill='x', expand=True)
 
-        browse_btn = ttk.Button(path_frame, text="浏览", command=self.browse_directory)
-        browse_btn.pack(side='left', padx=(0, 5))
+        self.browse_btn = ttk.Button(path_frame, text="浏览", command=self.browse_directory)
+        self.browse_btn.pack(side='left', padx=(0, 5))
 
         # 输出目录输入区域
         output_frame = ttk.Frame(self.root)
@@ -306,12 +323,28 @@ class MusicUpgradeGUI:
     def disable_table_during_matching(self):
         """在匹配期间禁用表格控件"""
         self.tree.config(selectmode='none')  # 禁用表格选择，但保留右键菜单功能
+        # 禁用音乐源下拉框
+        if hasattr(self, 'music_source_combo'):
+            self.music_source_combo.config(state='disabled')
+        # 禁用参考目录输入框和浏览按钮
+        if hasattr(self, 'path_entry'):
+            self.path_entry.config(state='disabled')
+        if hasattr(self, 'browse_btn'):
+            self.browse_btn.config(state='disabled')
 
     def enable_table_after_matching(self):
         """匹配完成后启用表格控件"""
         self.tree.config(selectmode='browse')  # 启用表格选择
         # 绑定右键菜单事件
         self.tree.bind("<Button-3>", self.show_context_menu)  # 右键点击
+        # 启用音乐源下拉框
+        if hasattr(self, 'music_source_combo'):
+            self.music_source_combo.config(state='readonly')
+        # 启用参考目录输入框和浏览按钮
+        if hasattr(self, 'path_entry'):
+            self.path_entry.config(state='normal')
+        if hasattr(self, 'browse_btn'):
+            self.browse_btn.config(state='normal')
 
     def match_files_async_threaded(self):
         """在独立线程中运行异步匹配过程"""
@@ -373,7 +406,7 @@ class MusicUpgradeGUI:
 
                # 异步搜索音乐
                async with AsyncRateLimitedGDAPIClient() as client:
-                   search_results = await client.search(search_keyword, source="netease", count=5)
+                   search_results = await client.search(search_keyword, source=self.music_source_var.get(), count=5)
 
                if not search_results:
                    matched_song = {"name": "未找到匹配", "artist": "", "id": None}
@@ -655,7 +688,7 @@ class MusicUpgradeGUI:
 
            # 异步搜索音乐
            async with AsyncRateLimitedGDAPIClient() as client:
-               search_results = await client.search(search_keyword, source="netease", count=5)
+               search_results = await client.search(search_keyword, source=self.music_source_var.get(), count=5)
 
            if not search_results:
                matched_song = {"name": "未找到匹配", "artist": "", "id": None}
@@ -969,7 +1002,7 @@ class MusicUpgradeGUI:
             keyword = keyword.replace('&', ',')
             # 异步执行搜索
             async with AsyncRateLimitedGDAPIClient() as client:
-                search_results = await client.search(keyword, source="netease", count=20)
+                search_results = await client.search(keyword, source=self.music_source_var.get(), count=20)
 
             # 在主线程中填充结果到表格
             self.root.after(0, lambda: self._populate_search_results(search_results, result_tree))
@@ -1066,7 +1099,7 @@ class MusicUpgradeGUI:
                     download_path = await download_lossless_music_async(
                         client,
                         matched_song['id'],
-                        "netease",
+                        self.music_source_var.get(),
                         music_file,
                         output_dir
                     )
@@ -1139,6 +1172,14 @@ class MusicUpgradeGUI:
         """在下载期间禁用控件"""
         self.upgrade_btn.config(state='disabled')
         self.tree.config(selectmode='none')  # 禁用表格选择
+        # 禁用音乐源下拉框
+        if hasattr(self, 'music_source_combo'):
+            self.music_source_combo.config(state='disabled')
+        # 禁用参考目录输入框和浏览按钮
+        if hasattr(self, 'path_entry'):
+            self.path_entry.config(state='disabled')
+        if hasattr(self, 'browse_btn'):
+            self.browse_btn.config(state='disabled')
 
     def enable_controls_after_download(self):
         """下载完成后启用控件"""
@@ -1146,6 +1187,14 @@ class MusicUpgradeGUI:
         self.tree.config(selectmode='browse')  # 启用表格选择
         # 绑定右键菜单事件
         self.tree.bind("<Button-3>", self.show_context_menu)  # 右键点击
+        # 启用音乐源下拉框
+        if hasattr(self, 'music_source_combo'):
+            self.music_source_combo.config(state='readonly')
+        # 启用参考目录输入框和浏览按钮
+        if hasattr(self, 'path_entry'):
+            self.path_entry.config(state='normal')
+        if hasattr(self, 'browse_btn'):
+            self.browse_btn.config(state='normal')
 
     def scroll_to_item(self, index):
         """滚动到指定项"""
@@ -1201,7 +1250,7 @@ class MusicUpgradeGUI:
                         download_path = await download_lossless_music_async(
                             client,
                             matched_song['id'],
-                            "netease",
+                            self.music_source_var.get(),
                             music_file,
                             output_dir
                         )
