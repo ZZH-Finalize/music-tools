@@ -26,7 +26,6 @@ from music_upgrader_core_async import (
     clean_filename,
     is_music_file,
     scan_music_files,
-    find_best_match,
     match_music_files,
     logger
 )
@@ -379,12 +378,8 @@ class MusicUpgradeGUI:
                if not search_results:
                    matched_song = {"name": "未找到匹配", "artist": "", "id": None}
                else:
-                   # 找到最佳匹配
-                   best_match = find_best_match(search_results, music_file.name, False)
-                   if not best_match:
-                       matched_song = {"name": "未找到匹配", "artist": "", "id": None}
-                   else:
-                       matched_song = best_match
+                   # 直接使用搜索结果的第一项作为匹配结果
+                   matched_song = search_results[0]
 
                # 只有在没有已有匹配结果或已有匹配结果失败时才更新匹配结果
                # 如果新的匹配失败，但已有匹配成功，则保持原有匹配结果
@@ -665,12 +660,8 @@ class MusicUpgradeGUI:
            if not search_results:
                matched_song = {"name": "未找到匹配", "artist": "", "id": None}
            else:
-               # 找到最佳匹配
-               best_match = find_best_match(search_results, self.music_files[index].name, False)
-               if not best_match:
-                   matched_song = {"name": "未找到匹配", "artist": "", "id": None}
-               else:
-                   matched_song = best_match
+               # 直接使用搜索结果的第一项作为匹配结果
+               matched_song = search_results[0]
 
            # 只有在没有已有匹配结果或已有匹配结果失败时才更新匹配结果
            # 如果新的匹配失败，但已有匹配成功，则保持原有匹配结果

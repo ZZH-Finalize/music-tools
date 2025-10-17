@@ -72,47 +72,6 @@ def scan_music_files(directory: str) -> List[Path]:
     return music_files
 
 
-def find_best_match(search_results: List[dict], original_filename: str, match_artist: bool = False) -> Optional[dict]:
-    """
-    根据原始文件名从搜索结果中找到最佳匹配
-    现在将歌曲名和歌手名合并成一个字符串进行相似度匹配
-    """
-    if not search_results:
-        return None
-
-    original_name = clean_filename(original_filename).lower()
-
-    # 尝试从原始文件名中分离出歌手和歌曲名（通常格式为"歌手 - 歌曲名"）
-    import re
-    parts = re.split(r'[-_~]+', original_name)
-    if len(parts) >= 2:
-        original_artist = parts[0].strip()
-        original_song = parts[1].strip()
-        # 合并歌手和歌曲名为一个字符串
-        original_combined = f"{original_artist} {original_song}".strip()
-    else:
-        # 如果无法分离，将整个名称作为搜索字符串
-        original_combined = original_name.strip()
-
-    best_match = None
-    best_score = -1  # 最高相似度得分
-
-    for result in search_results:
-        song_name = result.get('name', '').lower()
-        artist = ' '.join(result.get('artist', [])).lower() if isinstance(result.get('artist'), list) else result.get('artist', '').lower()
-
-        # 合并搜索结果中的歌手和歌曲名为一个字符串
-        combined_result = f"{artist} {song_name}".strip() if artist else song_name
-
-        # 计算合并字符串的相似度
-        combined_similarity = SequenceMatcher(None, original_combined, combined_result).ratio()
-
-        # 如果当前结果的相似度得分更高，则更新最佳匹配
-        if combined_similarity > best_score:
-            best_score = combined_similarity
-            best_match = result
-
-    return best_match
 
 
 async def download_lossless_music_async(
@@ -258,13 +217,13 @@ async def upgrade_music_files_async(
                     fail_count += 1
                     continue
 
-                # 找到最佳匹配
-                best_match = find_best_match(search_results, music_file.name, match_artist)
-                if not best_match:
+                # 直接使用搜索结果的第一项作为匹配结果
+                if not search_results:
                     logger.warning(f"未找到最佳匹配: {music_file.name}")
                     fail_count += 1
                     continue
 
+                best_match = search_results[0]
                 logger.info(f"找到匹配: {best_match.get('name', '')} - {best_match.get('artist', '')}")
 
                 # 获取曲目ID
@@ -355,9 +314,8 @@ async def match_music_files_async(
                     })
                     continue
 
-                # 找到最佳匹配
-                best_match = find_best_match(search_results, music_file.name, match_artist)
-                if not best_match:
+                # 直接使用搜索结果的第一项作为匹配结果
+                if not search_results:
                     logger.warning(f"未找到最佳匹配: {music_file.name}")
                     matched_results.append({
                         "file_path": music_file,
@@ -366,6 +324,7 @@ async def match_music_files_async(
                     })
                     continue
 
+                best_match = search_results[0]
                 logger.info(f"找到匹配: {best_match.get('name', '')} - {best_match.get('artist', '')}")
 
                 matched_results.append({
