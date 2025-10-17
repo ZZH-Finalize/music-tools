@@ -88,8 +88,8 @@ class MusicUpgradeGUI:
         browse_btn = ttk.Button(path_frame, text="浏览", command=self.browse_directory)
         browse_btn.pack(side='left', padx=(0, 5))
 
-        scan_btn = ttk.Button(path_frame, text="扫描音乐文件", command=self.scan_files)
-        scan_btn.pack(side='left', padx=(0, 5))
+        self.match_btn = ttk.Button(path_frame, text="自动匹配", command=self.start_matching)
+        self.match_btn.pack(side='left', padx=(0, 5))
 
         # 输出目录输入区域
         output_frame = ttk.Frame(self.root)
@@ -146,12 +146,16 @@ class MusicUpgradeGUI:
             if not self.output_var.get():  # 只有当输出目录为空时才自动填充
                 self.output_var.set(directory)
 
+            # 自动扫描音乐文件
+            self.auto_scan_files()
+
     def browse_output_directory(self):
         directory = filedialog.askdirectory()
         if directory:
             self.output_var.set(directory)
 
-    def scan_files(self):
+    def auto_scan_files(self):
+        """自动扫描音乐文件，但不执行匹配"""
         if not self.directory:
             logger.warning("请先选择音乐目录")
             messagebox.showwarning("警告", "请先选择音乐目录")
@@ -171,9 +175,6 @@ class MusicUpgradeGUI:
 
             # 启用升级按钮
             self.upgrade_btn.config(state='normal')
-
-            # 自动开始匹配
-            self.start_matching()
 
         except Exception as e:
             logger.error(f"扫描文件失败: {str(e)}")

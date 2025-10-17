@@ -75,29 +75,24 @@ def scan_music_files(directory: str) -> List[Path]:
 def find_best_match(search_results: List[dict], original_filename: str, match_artist: bool = False) -> Optional[dict]:
     """
     根据原始文件名从搜索结果中找到最佳匹配
-    默认只使用歌曲名进行匹配，当match_artist为True时额外匹配歌手
+    现在将歌曲名和歌手名合并成一个字符串进行相似度匹配
     """
     if not search_results:
         return None
 
     original_name = clean_filename(original_filename).lower()
 
-    # 默认只使用歌曲名进行匹配
-    original_song = original_name.strip()
-    original_artist = ""
-
-    # 如果需要匹配歌手，则尝试从原始文件名中分离出歌手和歌曲名
-    if match_artist:
-        import re
-        # 分离歌手和歌曲名（通常格式为"歌手 - 歌曲名"）
-        parts = re.split(r'[-_~]+', original_name)
-        if len(parts) >= 2:
-            original_artist = parts[0].strip()
-            original_song = parts[1].strip()
-        else:
-            # 如果无法分离，将整个名称作为歌曲名
-            original_song = original_name.strip()
-            original_artist = ""
+    # 尝试从原始文件名中分离出歌手和歌曲名（通常格式为"歌手 - 歌曲名"）
+    import re
+    parts = re.split(r'[-_~]+', original_name)
+    if len(parts) >= 2:
+        original_artist = parts[0].strip()
+        original_song = parts[1].strip()
+        # 合并歌手和歌曲名为一个字符串
+        original_combined = f"{original_artist} {original_song}".strip()
+    else:
+        # 如果无法分离，将整个名称作为搜索字符串
+        original_combined = original_name.strip()
 
     best_match = None
     best_score = -1  # 最高相似度得分
@@ -106,22 +101,15 @@ def find_best_match(search_results: List[dict], original_filename: str, match_ar
         song_name = result.get('name', '').lower()
         artist = ' '.join(result.get('artist', [])).lower() if isinstance(result.get('artist'), list) else result.get('artist', '').lower()
 
-        # 计算歌曲名相似度
-        song_similarity = SequenceMatcher(None, original_song, song_name).ratio()
+        # 合并搜索结果中的歌手和歌曲名为一个字符串
+        combined_result = f"{artist} {song_name}".strip() if artist else song_name
 
-        # 计算歌手相似度（仅在match_artist为True时）
-        if match_artist and original_artist:
-            artist_similarity = SequenceMatcher(None, original_artist, artist).ratio()
-        else:
-            # 如果不匹配歌手或原始文件名中没有分离出歌手，则艺术家相似度为0
-            artist_similarity = 0
+        # 计算合并字符串的相似度
+        combined_similarity = SequenceMatcher(None, original_combined, combined_result).ratio()
 
-        # 计算总相似度得分（歌曲相似度 + 艺术家相似度）
-        total_score = song_similarity + artist_similarity
-
-        # 如果当前结果的总得分更高，则更新最佳匹配
-        if total_score > best_score:
-            best_score = total_score
+        # 如果当前结果的相似度得分更高，则更新最佳匹配
+        if combined_similarity > best_score:
+            best_score = combined_similarity
             best_match = result
 
     return best_match
