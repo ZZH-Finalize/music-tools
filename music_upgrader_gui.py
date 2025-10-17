@@ -212,11 +212,11 @@ class MusicUpgradeGUI:
         ttk.Label(output_frame, text="输出目录:").pack(side='left')
 
         self.output_var = tk.StringVar()
-        output_entry = ttk.Entry(output_frame, textvariable=self.output_var, width=60)
-        output_entry.pack(side='left', padx=(5, 5), fill='x', expand=True)
+        self.output_entry = ttk.Entry(output_frame, textvariable=self.output_var, width=60)
+        self.output_entry.pack(side='left', padx=(5, 5), fill='x', expand=True)
 
-        output_browse_btn = ttk.Button(output_frame, text="浏览", command=self.browse_output_directory)
-        output_browse_btn.pack(side='left', padx=(0, 5))
+        self.output_browse_btn = ttk.Button(output_frame, text="浏览", command=self.browse_output_directory)
+        self.output_browse_btn.pack(side='left', padx=(0, 5))
 
         # 创建表格框架
         table_frame = ttk.Frame(self.root)
@@ -299,6 +299,9 @@ class MusicUpgradeGUI:
             # 启用升级按钮
             self.upgrade_btn.config(state='normal')
 
+            # 在待匹配状态下绑定右键菜单事件
+            self.tree.bind("<Button-3>", self.show_context_menu)  # 右键点击
+
         except Exception as e:
             logger.error(f"扫描文件失败: {str(e)}")
             messagebox.showerror("错误", f"扫描文件失败: {str(e)}")
@@ -322,7 +325,8 @@ class MusicUpgradeGUI:
 
     def disable_table_during_matching(self):
         """在匹配期间禁用表格控件"""
-        self.tree.config(selectmode='none')  # 禁用表格选择，但保留右键菜单功能
+        self.tree.config(selectmode='none')  # 禁用表格选择，同时移除右键菜单
+        self.tree.unbind("<Button-3>")  # 移除右键菜单绑定
         # 禁用音乐源下拉框
         if hasattr(self, 'music_source_combo'):
             self.music_source_combo.config(state='disabled')
@@ -331,11 +335,23 @@ class MusicUpgradeGUI:
             self.path_entry.config(state='disabled')
         if hasattr(self, 'browse_btn'):
             self.browse_btn.config(state='disabled')
+        # 禁用输出目录输入框和浏览按钮
+        if hasattr(self, 'output_entry'):
+            self.output_entry.config(state='disabled')
+        if hasattr(self, 'output_browse_btn'):
+            self.output_browse_btn.config(state='disabled')
+        # 禁用匹配按钮
+        if hasattr(self, 'match_btn'):
+            self.match_btn.config(state='disabled')
+        # 禁用升级按钮
+        if hasattr(self, 'upgrade_btn'):
+            self.upgrade_btn.config(state='disabled')
+        # 注意：保持日志等级下拉框启用
 
     def enable_table_after_matching(self):
         """匹配完成后启用表格控件"""
         self.tree.config(selectmode='browse')  # 启用表格选择
-        # 绑定右键菜单事件
+        # 重新绑定右键菜单事件
         self.tree.bind("<Button-3>", self.show_context_menu)  # 右键点击
         # 启用音乐源下拉框
         if hasattr(self, 'music_source_combo'):
@@ -345,6 +361,17 @@ class MusicUpgradeGUI:
             self.path_entry.config(state='normal')
         if hasattr(self, 'browse_btn'):
             self.browse_btn.config(state='normal')
+        # 启用输出目录输入框和浏览按钮
+        if hasattr(self, 'output_entry'):
+            self.output_entry.config(state='normal')
+        if hasattr(self, 'output_browse_btn'):
+            self.output_browse_btn.config(state='normal')
+        # 启用匹配按钮
+        if hasattr(self, 'match_btn'):
+            self.match_btn.config(state='normal')
+        # 启用升级按钮
+        if hasattr(self, 'upgrade_btn'):
+            self.upgrade_btn.config(state='normal')
 
     def match_files_async_threaded(self):
         """在独立线程中运行异步匹配过程"""
@@ -1171,7 +1198,8 @@ class MusicUpgradeGUI:
     def disable_controls_during_download(self):
         """在下载期间禁用控件"""
         self.upgrade_btn.config(state='disabled')
-        self.tree.config(selectmode='none')  # 禁用表格选择
+        self.tree.config(selectmode='none') # 禁用表格选择，同时移除右键菜单
+        self.tree.unbind("<Button-3>")  # 移除右键菜单绑定
         # 禁用音乐源下拉框
         if hasattr(self, 'music_source_combo'):
             self.music_source_combo.config(state='disabled')
@@ -1180,12 +1208,21 @@ class MusicUpgradeGUI:
             self.path_entry.config(state='disabled')
         if hasattr(self, 'browse_btn'):
             self.browse_btn.config(state='disabled')
+        # 禁用输出目录输入框和浏览按钮
+        if hasattr(self, 'output_entry'):
+            self.output_entry.config(state='disabled')
+        if hasattr(self, 'output_browse_btn'):
+            self.output_browse_btn.config(state='disabled')
+        # 禁用匹配按钮
+        if hasattr(self, 'match_btn'):
+            self.match_btn.config(state='disabled')
+        # 注意：保持日志等级下拉框启用
 
     def enable_controls_after_download(self):
         """下载完成后启用控件"""
         self.upgrade_btn.config(state='normal')
         self.tree.config(selectmode='browse')  # 启用表格选择
-        # 绑定右键菜单事件
+        # 重新绑定右键菜单事件
         self.tree.bind("<Button-3>", self.show_context_menu)  # 右键点击
         # 启用音乐源下拉框
         if hasattr(self, 'music_source_combo'):
@@ -1195,6 +1232,14 @@ class MusicUpgradeGUI:
             self.path_entry.config(state='normal')
         if hasattr(self, 'browse_btn'):
             self.browse_btn.config(state='normal')
+        # 启用输出目录输入框和浏览按钮
+        if hasattr(self, 'output_entry'):
+            self.output_entry.config(state='normal')
+        if hasattr(self, 'output_browse_btn'):
+            self.output_browse_btn.config(state='normal')
+        # 启用匹配按钮
+        if hasattr(self, 'match_btn'):
+            self.match_btn.config(state='normal')
 
     def scroll_to_item(self, index):
         """滚动到指定项"""
