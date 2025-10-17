@@ -91,15 +91,16 @@ class MusicStateManager:
         """检查是否可以忽略指定项"""
         if 0 <= index < len(self.status_list):
             current_status = self.status_list[index]
-            # 任何状态都可以被忽略
-            return True
+            # 只有在等待匹配、匹配失败、已忽略或匹配成功（但未下载）的状态下才能忽略
+            # 不允许在下载完成之后忽略
+            return current_status not in [MusicStatus.AUTO_DOWNLOAD_COMPLETE, MusicStatus.MANUAL_DOWNLOAD_COMPLETE]
         return False
 
     def can_manual_match(self, index: int) -> bool:
         """检查是否可以手动匹配指定项"""
         if 0 <= index < len(self.status_list):
             current_status = self.status_list[index]
-            # 除了已忽略和已下载的状态外，其他状态都可以手动匹配
+            # 除了已忽略、已下载完成和手动下载完成的状态外，其他状态都可以手动匹配
             return current_status not in [MusicStatus.IGNORED, MusicStatus.AUTO_DOWNLOAD_COMPLETE, MusicStatus.MANUAL_DOWNLOAD_COMPLETE]
         return False
 
@@ -108,6 +109,8 @@ class MusicStateManager:
         if 0 <= index < len(self.status_list):
             current_status = self.status_list[index]
             # 只有等待匹配和匹配失败的状态可以自动匹配
+            # 已忽略的项目不能自动匹配，因为如果在匹配之后被忽略，应该保留匹配信息，不参与下载
+            # 如果需要重新匹配已忽略的项目，应该先取消忽略
             return current_status in [MusicStatus.MATCH_PENDING, MusicStatus.MATCH_FAIL]
         return False
 
@@ -115,8 +118,8 @@ class MusicStateManager:
         """检查是否可以下载指定项"""
         if 0 <= index < len(self.status_list):
             current_status = self.status_list[index]
-            # 只有匹配成功的状态可以下载
-            return current_status in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED]
+            # 只有匹配成功的状态可以下载，且不能是已忽略的
+            return current_status in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED] and current_status != MusicStatus.IGNORED
         return False
 
     def can_unignore(self, index: int) -> bool:
@@ -323,84 +326,95 @@ class MusicUpgradeGUI:
             loop.close()
 
     async def match_files_async(self):
-        """异步匹配文件"""
-        for index, music_file in enumerate(self.music_files):
-            # 更新进度
-            progress = (index / len(self.music_files)) * 10
-            self.root.after(0, lambda p=progress: self.progress_var.set(p))
+       """异步匹配文件"""
+       for index, music_file in enumerate(self.music_files):
+           # 检查当前项是否被忽略，如果是则跳过匹配
+           if self.status_manager and self.status_manager.get_status(index) == MusicStatus.IGNORED:
+               logger.info(f"跳过已忽略的文件: {music_file.name}")
+               # 即使跳过此文件，也要更新进度，确保进度条正确
+               progress = (index / len(self.music_files)) * 10
+               self.root.after(0, lambda p=progress: self.progress_var.set(p))
+               continue
 
-            # 显示当前处理的文件
-            self.root.after(0, lambda f=music_file.name: self.update_status(f"正在匹配: {f}"))
+           # 更新进度
+           progress = (index / len(self.music_files)) * 10
+           self.root.after(0, lambda p=progress: self.progress_var.set(p))
 
-            try:
-                # 清理文件名以用于搜索
-                search_keyword = clean_filename(music_file.name)
-                # 将&替换为英文逗号
-                search_keyword = search_keyword.replace('&', ',')
-                logger.debug(f"搜索关键词: {search_keyword}")
+           # 显示当前处理的文件
+           self.root.after(0, lambda f=music_file.name: self.update_status(f"正在匹配: {f}"))
 
-                # 异步搜索音乐
-                async with AsyncRateLimitedGDAPIClient() as client:
-                    search_results = await client.search(search_keyword, source="netease", count=5)
+           # 自动滚动到当前项
+           self.root.after(0, lambda idx=index: self.scroll_to_item(idx))
 
-                if not search_results:
-                    matched_song = {"name": "未找到匹配", "artist": "", "id": None}
-                else:
-                    # 找到最佳匹配
-                    best_match = find_best_match(search_results, music_file.name, False)
-                    if not best_match:
-                        matched_song = {"name": "未找到匹配", "artist": "", "id": None}
-                    else:
-                        matched_song = best_match
+           try:
+               # 清理文件名以用于搜索
+               search_keyword = clean_filename(music_file.name)
+               # 将&替换为英文逗号
+               search_keyword = search_keyword.replace('&', ',')
+               logger.debug(f"搜索关键词: {search_keyword}")
 
-                # 更新匹配结果
-                self.matched_songs[index] = matched_song
-                # 同时保存到原始匹配结果列表
-                self.original_matched_songs[index] = matched_song
+               # 异步搜索音乐
+               async with AsyncRateLimitedGDAPIClient() as client:
+                   search_results = await client.search(search_keyword, source="netease", count=5)
 
-                # 更新状态
-                if self.status_manager:
-                    if matched_song and matched_song.get('id'):
-                        # 匹配成功
-                        old_status = self.status_manager.get_status(index)
-                        self.status_manager.set_status(index, MusicStatus.AUTO_MATCHED)
-                        logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.AUTO_MATCHED.value}")
-                        status_text = MusicStatus.AUTO_MATCHED.value
-                    else:
-                        # 匹配失败
-                        old_status = self.status_manager.get_status(index)
-                        self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
-                        logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
-                        status_text = MusicStatus.MATCH_FAIL.value
-                else:
-                    # 如果状态管理器不存在，使用默认值
-                    status_text = "未知状态"
+               if not search_results:
+                   matched_song = {"name": "未找到匹配", "artist": "", "id": None}
+               else:
+                   # 找到最佳匹配
+                   best_match = find_best_match(search_results, music_file.name, False)
+                   if not best_match:
+                       matched_song = {"name": "未找到匹配", "artist": "", "id": None}
+                   else:
+                       matched_song = best_match
 
-                # 更新表格显示
-                if matched_song and matched_song.get('id'):
-                    display_text = f"{matched_song.get('name', '未知')} - {matched_song.get('artist', ['未知'])[0] if isinstance(matched_song.get('artist'), list) else matched_song.get('artist', '未知')}"
-                else:
-                    display_text = "未找到匹配" if not matched_song or not matched_song.get('id') else "匹配失败"
-                self.root.after(0, lambda idx=index, text=display_text, st=status_text: self.update_table_item(idx, text, st))
+               # 更新匹配结果
+               self.matched_songs[index] = matched_song
+               # 同时保存到原始匹配结果列表
+               self.original_matched_songs[index] = matched_song
 
-            except Exception as e:
-                logger.error(f"匹配文件时出错 {music_file.name}: {str(e)}")
-                matched_song = {"name": "匹配失败", "artist": "", "id": None}
-                self.matched_songs[index] = matched_song
-                # 同时保存到原始匹配结果列表
-                self.original_matched_songs[index] = matched_song
+               # 更新状态
+               if self.status_manager:
+                   if matched_song and matched_song.get('id'):
+                       # 匹配成功
+                       old_status = self.status_manager.get_status(index)
+                       self.status_manager.set_status(index, MusicStatus.AUTO_MATCHED)
+                       logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.AUTO_MATCHED.value}")
+                       status_text = MusicStatus.AUTO_MATCHED.value
+                   else:
+                       # 匹配失败
+                       old_status = self.status_manager.get_status(index)
+                       self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
+                       logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
+                       status_text = MusicStatus.MATCH_FAIL.value
+               else:
+                   # 如果状态管理器不存在，使用默认值
+                   status_text = "未知状态"
 
-                # 更新状态为匹配失败
-                if self.status_manager:
-                    old_status = self.status_manager.get_status(index)
-                    self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
-                    logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
+               # 更新表格显示
+               if matched_song and matched_song.get('id'):
+                   display_text = f"{matched_song.get('name', '未知')} - {matched_song.get('artist', ['未知'])[0] if isinstance(matched_song.get('artist'), list) else matched_song.get('artist', '未知')}"
+               else:
+                   display_text = "未找到匹配" if not matched_song or not matched_song.get('id') else "匹配失败"
+               self.root.after(0, lambda idx=index, text=display_text, st=status_text: self.update_table_item(idx, text, st))
 
-                display_text = "匹配失败"
-                self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text, MusicStatus.MATCH_FAIL.value))
+           except Exception as e:
+               logger.error(f"匹配文件时出错 {music_file.name}: {str(e)}")
+               matched_song = {"name": "匹配失败", "artist": "", "id": None}
+               self.matched_songs[index] = matched_song
+               # 同时保存到原始匹配结果列表
+               self.original_matched_songs[index] = matched_song
 
-        # 所有文件处理完成
-        self.root.after(0, self.matching_complete)
+               # 更新状态为匹配失败
+               if self.status_manager:
+                   old_status = self.status_manager.get_status(index)
+                   self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
+                   logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
+
+               display_text = "匹配失败"
+               self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text, MusicStatus.MATCH_FAIL.value))
+
+       # 所有文件处理完成
+       self.root.after(0, self.matching_complete)
 
     def update_table_item(self, index, text, status_text=None):
         """更新表格的指定项"""
@@ -551,80 +565,94 @@ class MusicUpgradeGUI:
             loop.close()
 
     async def _rematch_single_file_async(self, index, search_keyword):
-        """异步重新匹配单个文件"""
-        try:
-            # 异步搜索音乐
-            async with AsyncRateLimitedGDAPIClient() as client:
-                search_results = await client.search(search_keyword, source="netease", count=5)
+       """异步重新匹配单个文件"""
+       # 检查当前项是否被忽略，如果是则跳过匹配
+       if self.status_manager and self.status_manager.get_status(index) == MusicStatus.IGNORED:
+           logger.info(f"跳过已忽略的文件: {self.music_files[index].name}")
+           return
 
-            if not search_results:
-                matched_song = {"name": "未找到匹配", "artist": "", "id": None}
-            else:
-                # 找到最佳匹配
-                best_match = find_best_match(search_results, self.music_files[index].name, False)
-                if not best_match:
-                    matched_song = {"name": "未找到匹配", "artist": "", "id": None}
-                else:
-                    matched_song = best_match
+       # 自动滚动到当前项
+       self.root.after(0, lambda idx=index: self.scroll_to_item(idx))
 
-            # 更新匹配结果
-            self.matched_songs[index] = matched_song
-            # 同时保存到原始匹配结果列表
-            self.original_matched_songs[index] = matched_song
+       try:
+           # 异步搜索音乐
+           async with AsyncRateLimitedGDAPIClient() as client:
+               search_results = await client.search(search_keyword, source="netease", count=5)
 
-            # 更新状态
-            if self.status_manager:
-                old_status = self.status_manager.get_status(index)
-                if matched_song and matched_song.get('id'):
-                    # 匹配成功
-                    self.status_manager.set_status(index, MusicStatus.AUTO_MATCHED)
-                    logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.AUTO_MATCHED.value}")
-                    status_text = MusicStatus.AUTO_MATCHED.value
-                else:
-                    # 匹配失败
-                    self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
-                    logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
-                    status_text = MusicStatus.MATCH_FAIL.value
-            else:
-                # 如果状态管理器不存在，使用默认值
-                status_text = "未知状态"
+           if not search_results:
+               matched_song = {"name": "未找到匹配", "artist": "", "id": None}
+           else:
+               # 找到最佳匹配
+               best_match = find_best_match(search_results, self.music_files[index].name, False)
+               if not best_match:
+                   matched_song = {"name": "未找到匹配", "artist": "", "id": None}
+               else:
+                   matched_song = best_match
 
-            # 更新表格显示
-            if matched_song and matched_song.get('id'):
-                display_text = f"{matched_song.get('name', '未知')} - {matched_song.get('artist', ['未知'])[0] if isinstance(matched_song.get('artist'), list) else matched_song.get('artist', '未知')}"
-            else:
-                display_text = "未找到匹配" if not matched_song or not matched_song.get('id') else "匹配失败"
-            self.root.after(0, lambda idx=index, text=display_text, st=status_text: self.update_table_item(idx, text, st))
+           # 更新匹配结果
+           self.matched_songs[index] = matched_song
+           # 同时保存到原始匹配结果列表
+           self.original_matched_songs[index] = matched_song
 
-            logger.info(f"重新匹配完成: {self.music_files[index].name}")
-        except Exception as e:
-            logger.error(f"重新匹配文件时出错 {self.music_files[index].name}: {str(e)}")
-            matched_song = {"name": "匹配失败", "artist": "", "id": None}
-            self.matched_songs[index] = matched_song
-            # 同时保存到原始匹配结果列表
-            self.original_matched_songs[index] = matched_song
+           # 更新状态
+           if self.status_manager:
+               old_status = self.status_manager.get_status(index)
+               if matched_song and matched_song.get('id'):
+                   # 匹配成功
+                   self.status_manager.set_status(index, MusicStatus.AUTO_MATCHED)
+                   logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.AUTO_MATCHED.value}")
+                   status_text = MusicStatus.AUTO_MATCHED.value
+               else:
+                   # 匹配失败
+                   self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
+                   logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
+                   status_text = MusicStatus.MATCH_FAIL.value
+           else:
+               # 如果状态管理器不存在，使用默认值
+               status_text = "未知状态"
 
-            # 更新状态为匹配失败
-            if self.status_manager:
-                old_status = self.status_manager.get_status(index)
-                self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
-                logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
+           # 更新表格显示
+           if matched_song and matched_song.get('id'):
+               display_text = f"{matched_song.get('name', '未知')} - {matched_song.get('artist', ['未知'])[0] if isinstance(matched_song.get('artist'), list) else matched_song.get('artist', '未知')}"
+           else:
+               display_text = "未找到匹配" if not matched_song or not matched_song.get('id') else "匹配失败"
+           self.root.after(0, lambda idx=index, text=display_text, st=status_text: self.update_table_item(idx, text, st))
 
-            display_text = "匹配失败"
-            self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text, MusicStatus.MATCH_FAIL.value))
+           logger.info(f"重新匹配完成: {self.music_files[index].name}")
+       except Exception as e:
+           logger.error(f"重新匹配文件时出错 {self.music_files[index].name}: {str(e)}")
+           matched_song = {"name": "匹配失败", "artist": "", "id": None}
+           self.matched_songs[index] = matched_song
+           # 同时保存到原始匹配结果列表
+           self.original_matched_songs[index] = matched_song
+
+           # 更新状态为匹配失败
+           if self.status_manager:
+               old_status = self.status_manager.get_status(index)
+               self.status_manager.set_status(index, MusicStatus.MATCH_FAIL)
+               logger.debug(f"状态转换: {old_status.value if old_status else 'None'} -> {MusicStatus.MATCH_FAIL.value}")
+
+           display_text = "匹配失败"
+           self.root.after(0, lambda idx=index, text=display_text: self.update_table_item(idx, text, MusicStatus.MATCH_FAIL.value))
 
     def manual_match(self, item):
-        """手动匹配指定项"""
-        logger.debug("右键菜单-手动匹配-被点击")
-        # 获取项索引
-        items = self.tree.get_children()
-        index = items.index(item)
+       """手动匹配指定项"""
+       logger.debug("右键菜单-手动匹配-被点击")
+       # 获取项索引
+       items = self.tree.get_children()
+       index = items.index(item)
 
-        # 获取原始文件名
-        original_filename = self.music_files[index].name
+       # 检查当前项是否被忽略，如果是则不允许手动匹配
+       if self.status_manager and self.status_manager.get_status(index) == MusicStatus.IGNORED:
+           logger.warning(f"无法手动匹配已忽略的文件: {self.music_files[index].name}")
+           messagebox.showwarning("警告", "无法对已忽略的项目进行手动匹配，请先取消忽略")
+           return
 
-        # 创建手动匹配窗口
-        self.create_manual_match_window(index, original_filename)
+       # 获取原始文件名
+       original_filename = self.music_files[index].name
+
+       # 创建手动匹配窗口
+       self.create_manual_match_window(index, original_filename)
 
     def create_manual_match_window(self, index, original_filename):
         """创建手动匹配窗口"""
@@ -847,29 +875,35 @@ class MusicUpgradeGUI:
             result_tree.insert('', 'end', values=(name, artist, album), tags=(f"search_result_{i}",))
 
     def download_single(self, item):
-        """下载单个歌曲"""
-        logger.debug("右键菜单-下载-被点击")
-        # 获取项索引
-        items = self.tree.get_children()
-        index = items.index(item)
+       """下载单个歌曲"""
+       logger.debug("右键菜单-下载-被点击")
+       # 获取项索引
+       items = self.tree.get_children()
+       index = items.index(item)
 
-        # 检查是否有匹配结果
-        matched_song = self.matched_songs[index]
-        # 检查matched_song是否为字典且有id字段
-        if not matched_song or not isinstance(matched_song, dict) or not matched_song.get('id'):
-            logger.warning(f"文件 {self.music_files[index].name} 没有匹配结果，无法下载")
-            messagebox.showwarning("警告", "该项目没有匹配结果，无法下载")
-            return
+       # 检查当前项是否被忽略，如果是则不允许下载
+       if self.status_manager and self.status_manager.get_status(index) == MusicStatus.IGNORED:
+           logger.warning(f"无法下载已忽略的文件: {self.music_files[index].name}")
+           messagebox.showwarning("警告", "无法下载已忽略的项目")
+           return
 
-        # 确认是否下载
-        filename = self.music_files[index].name
-        if not messagebox.askyesno("确认", f"确定要下载 {filename} 吗？"):
-            return
+       # 检查是否有匹配结果
+       matched_song = self.matched_songs[index]
+       # 检查matched_song是否为字典且有id字段
+       if not matched_song or not isinstance(matched_song, dict) or not matched_song.get('id'):
+           logger.warning(f"文件 {self.music_files[index].name} 没有匹配结果，无法下载")
+           messagebox.showwarning("警告", "该项目没有匹配结果，无法下载")
+           return
 
-        # 在新线程中执行下载
-        download_thread = threading.Thread(target=self.download_single_async_threaded, args=(index,))
-        download_thread.daemon = True
-        download_thread.start()
+       # 确认是否下载
+       filename = self.music_files[index].name
+       if not messagebox.askyesno("确认", f"确定要下载 {filename} 吗？"):
+           return
+
+       # 在新线程中执行下载
+       download_thread = threading.Thread(target=self.download_single_async_threaded, args=(index,))
+       download_thread.daemon = True
+       download_thread.start()
 
     def download_single_async_threaded(self, index):
         """在独立线程中运行异步下载"""
@@ -1010,8 +1044,8 @@ class MusicUpgradeGUI:
             can_download = True
             if self.status_manager:
                 current_status = self.status_manager.get_status(i)
-                # 只处理AUTO_MATCHED或MANUAL_MATCHED状态的文件
-                if current_status not in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED]:
+                # 只处理AUTO_MATCHED或MANUAL_MATCHED状态的文件，且不能是已忽略的
+                if current_status not in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED] or current_status == MusicStatus.IGNORED:
                     can_download = False
 
             # 更新进度
