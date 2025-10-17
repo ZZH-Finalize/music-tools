@@ -7,5 +7,29 @@
     "settings": {
         "python.languageServer": "Default",
         "files.trimTrailingWhitespace": true
+    },
+    "tasks": {
+        "version": "2.0.0",
+        "tasks": [
+            {
+                "label": "run",
+                "command": "python",
+                "type": "shell",
+                "args": [
+                    "music_upgrader_gui.py"
+                ],
+                "problemMatcher": [
+                    "$python"
+                ],
+                "presentation": {
+                    "reveal": "never",
+                    "panel": "shared"
+                },
+                "group": {
+                    "kind": "test",
+                    "isDefault": true
+                }
+            }
+        ]
     }
 }
