@@ -148,6 +148,12 @@ class MusicUpgradeGUI:
         self.loop = None
         self.loop_thread = None
 
+        # 用于控制匹配和下载的取消操作
+        self.is_matching = False
+        self.is_upgrading = False
+        self.cancel_matching = False
+        self.cancel_upgrading = False
+
         # 日志等级变量
         self.log_level_var = tk.StringVar(value="INFO")
         self.log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -307,21 +313,32 @@ class MusicUpgradeGUI:
             messagebox.showerror("错误", f"扫描文件失败: {str(e)}")
 
     def start_matching(self):
-        """在后台线程中开始匹配音乐文件"""
-        logger.debug("按钮-自动匹配-被点击")
-        self.progress_var.set(0)
-        self.upgrade_btn.config(state='disabled')
+        """在后台线程中开始匹配音乐文件或取消匹配"""
+        if self.is_matching:
+            # 如果正在匹配，点击按钮则取消匹配
+            logger.debug("按钮-取消匹配-被点击")
+            self.cancel_matching = True
+        else:
+            # 如果没有在匹配，开始匹配
+            logger.debug("按钮-自动匹配-被点击")
+            self.cancel_matching = False
+            self.is_matching = True
+            self.progress_var.set(0)
+            self.upgrade_btn.config(state='disabled')
 
-        # 在匹配期间禁用表格控件
-        self.disable_table_during_matching()
+            # 更新按钮文本
+            self.match_btn.config(text="取消匹配")
 
-        # 初始化原始匹配结果列表
-        self.original_matched_songs = [None] * len(self.music_files)
+            # 在匹配期间禁用表格控件
+            self.disable_table_during_matching()
 
-        # 在新线程中运行匹配过程
-        matching_thread = threading.Thread(target=self.match_files_async_threaded)
-        matching_thread.daemon = True
-        matching_thread.start()
+            # 初始化原始匹配结果列表
+            self.original_matched_songs = [None] * len(self.music_files)
+
+            # 在新线程中运行匹配过程
+            matching_thread = threading.Thread(target=self.match_files_async_threaded)
+            matching_thread.daemon = True
+            matching_thread.start()
 
     def disable_table_during_matching(self):
         """在匹配期间禁用表格控件"""
@@ -340,12 +357,10 @@ class MusicUpgradeGUI:
             self.output_entry.config(state='disabled')
         if hasattr(self, 'output_browse_btn'):
             self.output_browse_btn.config(state='disabled')
-        # 禁用匹配按钮
-        if hasattr(self, 'match_btn'):
-            self.match_btn.config(state='disabled')
         # 禁用升级按钮
         if hasattr(self, 'upgrade_btn'):
             self.upgrade_btn.config(state='disabled')
+        # 注意：保持匹配按钮启用，以便可以点击取消
         # 注意：保持日志等级下拉框启用
 
     def enable_table_after_matching(self):
@@ -387,6 +402,12 @@ class MusicUpgradeGUI:
     async def match_files_async(self):
        """异步匹配文件"""
        for index, music_file in enumerate(self.music_files):
+           # 检查是否需要取消匹配
+           if self.cancel_matching:
+               logger.info("匹配被用户取消")
+               self.root.after(0, self.cancel_matching_process)
+               return
+
            # 检查当前项是否被忽略，如果是则跳过匹配
            if self.status_manager and self.status_manager.get_status(index) == MusicStatus.IGNORED:
                logger.info(f"跳过已忽略的文件: {music_file.name}")
@@ -552,11 +573,24 @@ class MusicUpgradeGUI:
         """更新状态信息"""
         self.root.title(f"音乐品质升级工具 - {message}")
 
+    def cancel_matching_process(self):
+        """取消匹配过程后的处理"""
+        self.is_matching = False
+        self.cancel_matching = False
+        self.progress_var.set(0)
+        self.upgrade_btn.config(state='normal')
+        self.enable_table_after_matching() # 启用表格控件
+        self.match_btn.config(text="自动匹配")  # 恢复按钮文本
+        self.root.title("音乐品质升级工具")
+        logger.info("匹配已取消")
+
     def matching_complete(self):
         """匹配完成后的处理"""
+        self.is_matching = False  # 匹配完成，重置标志
         self.progress_var.set(10)
         self.upgrade_btn.config(state='normal')
         self.enable_table_after_matching() # 启用表格控件
+        self.match_btn.config(text="自动匹配")  # 恢复按钮文本
         self.root.title("音乐品质升级工具")
         messagebox.showinfo("完成", f"匹配完成！找到 {len(self.music_files)} 个音乐文件，其中 {sum(1 for s in self.matched_songs if s and isinstance(s, dict) and s.get('id'))} 个成功匹配。")
 
@@ -1160,44 +1194,54 @@ class MusicUpgradeGUI:
             self.root.after(0, lambda: messagebox.showerror("错误", f"下载过程中出错: {str(e)}"))
 
     def start_upgrade(self):
-        """开始升级音乐文件 - 自动下载所有匹配的文件（仅下载AUTO_MATCHED和MANUAL_MATCHED状态的文件）"""
-        logger.debug("按钮-开始升级-被点击")
-        if not self.directory or not self.music_files:
-            logger.warning("请先扫描音乐文件")
-            messagebox.showwarning("警告", "请先扫描音乐文件")
-            return
-
-        # 计算可自动下载的文件数量（只考虑AUTO_MATCHED、MANUAL_MATCHED和DOWNLOAD_FAIL状态的文件）
-        downloadable_count = 0
-        if self.status_manager:
-            for i in range(len(self.music_files)):
-                status = self.status_manager.get_status(i)
-                if status in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED, MusicStatus.DOWNLOAD_FAIL]:
-                    downloadable_count += 1
+        """开始升级音乐文件 - 自动下载所有匹配的文件（仅下载AUTO_MATCHED和MANUAL_MATCHED状态的文件）或取消下载"""
+        if self.is_upgrading:
+            # 如果正在升级，点击按钮则取消升级
+            logger.debug("按钮-取消下载-被点击")
+            self.cancel_upgrading = True
         else:
-            # 如果没有状态管理器，使用原始逻辑
-            downloadable_count = sum(1 for song in self.matched_songs if song and isinstance(song, dict) and song.get('id'))
+            # 如果没有在升级，开始升级
+            logger.debug("按钮-开始升级-被点击")
+            self.cancel_upgrading = False
+            self.is_upgrading = True
+            if not self.directory or not self.music_files:
+                logger.warning("请先扫描音乐文件")
+                messagebox.showwarning("警告", "请先扫描音乐文件")
+                return
 
-        if downloadable_count == 0:
-            logger.warning("没有可升级的匹配文件")
-            messagebox.showwarning("警告", "没有可升级的匹配文件")
-            return
+            # 计算可自动下载的文件数量（只考虑AUTO_MATCHED、MANUAL_MATCHED和DOWNLOAD_FAIL状态的文件）
+            downloadable_count = 0
+            if self.status_manager:
+                for i in range(len(self.music_files)):
+                    status = self.status_manager.get_status(i)
+                    if status in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED, MusicStatus.DOWNLOAD_FAIL]:
+                        downloadable_count += 1
+            else:
+                # 如果没有状态管理器，使用原始逻辑
+                downloadable_count = sum(1 for song in self.matched_songs if song and isinstance(song, dict) and song.get('id'))
 
-        # 确认是否继续
-        if not messagebox.askyesno("确认", f"将要升级 {downloadable_count} 个文件，是否继续？"):
-            return
+            if downloadable_count == 0:
+                logger.warning("没有可升级的匹配文件")
+                messagebox.showwarning("警告", "没有可升级的匹配文件")
+                return
 
-        # 禁用控件
-        self.disable_controls_during_download()
+            # 确认是否继续
+            if not messagebox.askyesno("确认", f"将要升级 {downloadable_count} 个文件，是否继续？"):
+                return
 
-        # 在新线程中执行升级
-        upgrade_thread = threading.Thread(target=self.upgrade_files_async_threaded)
-        upgrade_thread.daemon = True
-        upgrade_thread.start()
+            # 更新按钮文本
+            self.upgrade_btn.config(text="取消下载")
+
+            # 禁用控件
+            self.disable_controls_during_download()
+
+            # 在新线程中执行升级
+            upgrade_thread = threading.Thread(target=self.upgrade_files_async_threaded)
+            upgrade_thread.daemon = True
+            upgrade_thread.start()
 
     def disable_controls_during_download(self):
         """在下载期间禁用控件"""
-        self.upgrade_btn.config(state='disabled')
         self.tree.config(selectmode='none') # 禁用表格选择，同时移除右键菜单
         self.tree.unbind("<Button-3>")  # 移除右键菜单绑定
         # 禁用音乐源下拉框
@@ -1216,7 +1260,18 @@ class MusicUpgradeGUI:
         # 禁用匹配按钮
         if hasattr(self, 'match_btn'):
             self.match_btn.config(state='disabled')
+        # 注意：保持升级按钮启用，以便可以点击取消
         # 注意：保持日志等级下拉框启用
+
+    def cancel_upgrading_process(self):
+        """取消升级过程后的处理"""
+        self.is_upgrading = False
+        self.cancel_upgrading = False
+        self.progress_var.set(0)
+        self.enable_controls_after_download()
+        self.upgrade_btn.config(text="开始升级")  # 恢复按钮文本
+        self.root.title("音乐品质升级工具")
+        logger.info("升级已取消")
 
     def enable_controls_after_download(self):
         """下载完成后启用控件"""
@@ -1267,6 +1322,12 @@ class MusicUpgradeGUI:
         fail_count = 0
 
         for i, (music_file, matched_song) in enumerate(zip(self.music_files, self.matched_songs)):
+            # 检查是否需要取消升级
+            if self.cancel_upgrading:
+                logger.info("升级被用户取消")
+                self.root.after(0, self.cancel_upgrading_process)
+                return
+
             # 检查状态管理器是否存在以及当前项是否处于可下载状态
             can_download = True
             if self.status_manager:
@@ -1339,12 +1400,15 @@ class MusicUpgradeGUI:
                     logger.warning(f"没有匹配结果: {music_file.name}")
 
         # 所有文件处理完成
+        self.is_upgrading = False  # 升级完成，重置标志
         self.root.after(0, lambda: self.upgrade_complete(success_count, fail_count))
 
     def upgrade_complete(self, success_count, fail_count):
         """升级完成后的处理"""
+        self.is_upgrading = False  # 升级完成，重置标志
         self.progress_var.set(100)
         self.enable_controls_after_download()
+        self.upgrade_btn.config(text="开始升级")  # 恢复按钮文本
         self.root.title("音乐品质升级工具")
         logger.info(f"升级完成！成功: {success_count}, 失败: {fail_count}, 总计: {len(self.music_files)}")
         messagebox.showinfo("完成", f"升级完成！成功: {success_count}, 失败: {fail_count}, 总计: {len(self.music_files)}")
