@@ -155,6 +155,7 @@ class MusicUpgradeGUI:
 
     def change_log_level(self, event=None):
         """更改日志等级"""
+        logger.debug("按钮-更改日志等级-被点击")
         import logging
         new_level = self.log_level_var.get()
         logger.setLevel(getattr(logging, new_level))
@@ -237,6 +238,7 @@ class MusicUpgradeGUI:
         # self.tree.bind('<<TreeviewSelect>>', self.on_table_select)
 
     def browse_directory(self):
+        logger.debug("按钮-浏览目录-被点击")
         directory = filedialog.askdirectory()
         if directory:
             self.directory = directory
@@ -249,6 +251,7 @@ class MusicUpgradeGUI:
             self.auto_scan_files()
 
     def browse_output_directory(self):
+        logger.debug("按钮-浏览输出目录-被点击")
         directory = filedialog.askdirectory()
         if directory:
             self.output_var.set(directory)
@@ -283,6 +286,7 @@ class MusicUpgradeGUI:
 
     def start_matching(self):
         """在后台线程中开始匹配音乐文件"""
+        logger.debug("按钮-自动匹配-被点击")
         self.progress_var.set(0)
         self.upgrade_btn.config(state='disabled')
 
@@ -463,6 +467,7 @@ class MusicUpgradeGUI:
 
     def ignore_item(self, item):
         """忽略指定项"""
+        logger.debug("右键菜单-忽略-被点击")
         # 获取项索引
         items = self.tree.get_children()
         index = items.index(item)
@@ -484,6 +489,7 @@ class MusicUpgradeGUI:
 
     def unignore_item(self, item):
         """取消忽略指定项，恢复到原始匹配状态"""
+        logger.debug("右键菜单-取消忽略-被点击")
         # 获取项索引
         items = self.tree.get_children()
         index = items.index(item)
@@ -609,6 +615,7 @@ class MusicUpgradeGUI:
 
     def manual_match(self, item):
         """手动匹配指定项"""
+        logger.debug("右键菜单-手动匹配-被点击")
         # 获取项索引
         items = self.tree.get_children()
         index = items.index(item)
@@ -690,6 +697,7 @@ class MusicUpgradeGUI:
 
     def select_match(self, event, index, result_tree, window):
         """选择匹配项"""
+        logger.debug("新窗口-选择匹配项-双击")
         # 获取选中的项
         selection = result_tree.selection()
         if not selection:
@@ -840,6 +848,7 @@ class MusicUpgradeGUI:
 
     def download_single(self, item):
         """下载单个歌曲"""
+        logger.debug("右键菜单-下载-被点击")
         # 获取项索引
         items = self.tree.get_children()
         index = items.index(item)
@@ -925,17 +934,18 @@ class MusicUpgradeGUI:
 
     def start_upgrade(self):
         """开始升级音乐文件 - 自动下载所有匹配的文件（仅下载AUTO_MATCHED和MANUAL_MATCHED状态的文件）"""
+        logger.debug("按钮-开始升级-被点击")
         if not self.directory or not self.music_files:
             logger.warning("请先扫描音乐文件")
             messagebox.showwarning("警告", "请先扫描音乐文件")
             return
 
-        # 计算可自动下载的文件数量（只考虑AUTO_MATCHED和MANUAL_MATCHED状态的文件）
+        # 计算可自动下载的文件数量（只考虑AUTO_MATCHED、MANUAL_MATCHED和DOWNLOAD_FAIL状态的文件）
         downloadable_count = 0
         if self.status_manager:
             for i in range(len(self.music_files)):
                 status = self.status_manager.get_status(i)
-                if status in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED]:
+                if status in [MusicStatus.AUTO_MATCHED, MusicStatus.MANUAL_MATCHED, MusicStatus.DOWNLOAD_FAIL]:
                     downloadable_count += 1
         else:
             # 如果没有状态管理器，使用原始逻辑
