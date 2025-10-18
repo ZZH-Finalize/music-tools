@@ -16,7 +16,7 @@
                 "command": "python",
                 "type": "shell",
                 "args": [
-                    "music_upgrader_gui.py"
+                    "music_upgrader/main.py"
                 ],
                 "problemMatcher": [
                     "$python"
